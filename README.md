@@ -35,9 +35,9 @@ commits invisible to whoever's hitting the URL. First-time only:
 git add .
 git commit -m "your message"
 git push origin master                            # pushes only, doesn't deploy
-# Then: Repo → Actions tab → "Deploy to GitHub Pages" → "Run workflow"
-# Site goes live at https://<owner>.github.io/<repo>/  in ~1-2 min
 ```
+Then: **Repo → Actions tab → "Deploy to GitHub Pages" → "Run workflow"**
+Site goes live at `https://<owner>.github.io/<repo>/`  in ~1-2 min
 
 ## Build the Windows .exe
 
