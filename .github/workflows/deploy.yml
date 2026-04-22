@@ -11,13 +11,15 @@
 #   (no extra config needed — this workflow does everything else)
 #
 # Final URL: https://<owner>.github.io/<repo>/
-# Trigger manually from the Actions tab, or push to main/master.
+#
+# Deploys are manual-only — pushes to master don't auto-deploy. To publish:
+#   Repo → Actions tab → "Deploy to GitHub Pages" (left sidebar) → "Run workflow"
+# This lets you push intermediate commits without flipping the live site
+# until you're ready.
 
 name: Deploy to GitHub Pages
 
 on:
-  push:
-    branches: [main, master]
   workflow_dispatch:
 
 # Pages deploy action needs these. `id-token: write` is for the OIDC

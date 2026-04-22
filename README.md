@@ -26,14 +26,17 @@ For LAN-only HTTPS (no Cloudflare round-trip), see [MOBILE.md](./MOBILE.md).
 
 ## Deploy to GitHub Pages
 
-The workflow at `.github/workflows/deploy.yml` runs `npm ci && npm run fetch`
-on every push to `main`/`master` and publishes `src/` as the live site.
-First-time only: **Repo → Settings → Pages → Source = "GitHub Actions"**.
+Pushes don't auto-deploy. Push as often as you like, then manually trigger
+a deploy when you want the live site to update — keeps work-in-progress
+commits invisible to whoever's hitting the URL. First-time only:
+**Repo → Settings → Pages → Source = "GitHub Actions"**.
 
 ```sh
 git add .
 git commit -m "your message"
-git push origin master                            # auto-deploys to https://<owner>.github.io/<repo>/
+git push origin master                            # pushes only, doesn't deploy
+# Then: Repo → Actions tab → "Deploy to GitHub Pages" → "Run workflow"
+# Site goes live at https://<owner>.github.io/<repo>/  in ~1-2 min
 ```
 
 ## Build the Windows .exe
