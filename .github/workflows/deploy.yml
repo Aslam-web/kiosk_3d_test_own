@@ -1,0 +1,79 @@
+# Deploys the static frontend in src/ to GitHub Pages.
+#
+# Why this exists: src/vendor/ is gitignored (it's the ~44 MB output of
+# `npm run fetch` — Three.js + MediaPipe WASM + face landmarker model),
+# so we can't just point Pages at the repo directly. This workflow runs
+# npm run fetch inside the Actions runner, snapshots src/ as a Pages
+# artifact, and publishes it.
+#
+# First-time setup on GitHub:
+#   Repo → Settings → Pages → Source = "GitHub Actions"
+#   (no extra config needed — this workflow does everything else)
+#
+# Final URL: https://<owner>.github.io/<repo>/
+# Trigger manually from the Actions tab, or push to main/master.
+
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+# Pages deploy action needs these. `id-token: write` is for the OIDC
+# auth the Pages artifact uploader uses — without it the deploy step
+# fails with a 403 that looks confusing.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Avoid two concurrent deploys clobbering each other. `cancel-in-progress:
+# false` means if you push twice in quick succession both deploys finish
+# in order — the alternative (cancelling the older one) occasionally
+# leaves the site in a half-deployed state.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      # package.json only has @tauri-apps/cli as a devDep, which ubuntu
+      # doesn't need — but `npm ci` is still the right call for a
+      # reproducible install from package-lock.json.
+      - name: Install toolchain
+        run: npm ci
+
+      # Pulls Three.js + MediaPipe tarballs from npm and unpacks them
+      # into src/vendor/. Roughly 45s on a cold runner.
+      - name: Vendor runtime assets
+        run: npm run fetch
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      # The artifact is literally the `src/` folder — index.html plus
+      # the freshly-populated vendor tree.
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: src/
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

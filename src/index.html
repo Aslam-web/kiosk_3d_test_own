@@ -1,0 +1,726 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>FishtankVR</title>
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no" />
+<meta name="theme-color" content="#0a0b10" />
+<!-- iOS web-app niceties (if added to home screen) -->
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<style>
+  :root { color-scheme: dark;
+          --safe-t: env(safe-area-inset-top, 0px);
+          --safe-r: env(safe-area-inset-right, 0px);
+          --safe-b: env(safe-area-inset-bottom, 0px);
+          --safe-l: env(safe-area-inset-left, 0px); }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: #0a0b10; overflow: hidden;
+               font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+               color: #e8edf5; touch-action: none; -webkit-touch-callout: none;
+               -webkit-user-select: none; user-select: none; overscroll-behavior: none; }
+  /* Use dynamic viewport units on mobile so the URL bar collapsing doesn't resize
+     the canvas mid-scene. Fallback to vh for older browsers. */
+  canvas#stage { display: block; width: 100vw; height: 100vh;
+                 height: 100dvh; height: 100svh; }
+
+  /* HUD — small pills in the corners */
+  .hud { position: fixed; z-index: 10; padding: 8px 12px;
+         background: rgba(16,18,24,0.72); backdrop-filter: blur(6px);
+         border: 1px solid rgba(255,255,255,0.08); border-radius: 10px;
+         font-size: 12px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+         line-height: 1.4; pointer-events: none; white-space: pre; max-width: calc(100vw - 24px); }
+  .hud.hidden { display: none; }   /* toggled from the menu */
+  #hud-top    { top:    calc(12px + var(--safe-t)); left:  calc(12px + var(--safe-l)); }
+  #hud-head   { bottom: calc(12px + var(--safe-b)); left:  calc(12px + var(--safe-l)); }
+
+  /* Webcam self-view — mirrored, bottom-right corner */
+  #selfview { position: fixed;
+              right:  calc(12px + var(--safe-r));
+              bottom: calc(12px + var(--safe-b));
+              width: 200px; height: 150px;
+              border-radius: 10px; border: 1px solid rgba(255,255,255,0.1);
+              background: #000; transform: scaleX(-1); object-fit: cover; z-index: 5;
+              box-shadow: 0 8px 24px rgba(0,0,0,0.4); pointer-events: none; }
+  #selfview.hidden { display: none; }
+
+  /* Floating menu button — mobile's equivalent of the keyboard shortcuts */
+  #menu-btn { position: fixed;
+              right:  calc(12px + var(--safe-r));
+              bottom: calc(12px + var(--safe-b));
+              z-index: 20;
+              width: 52px; height: 52px; border-radius: 50%;
+              background: rgba(16,18,24,0.88); color: #e8edf5;
+              border: 1px solid rgba(255,255,255,0.14);
+              font-size: 22px; line-height: 1; display: none;
+              box-shadow: 0 8px 24px rgba(0,0,0,0.4); cursor: pointer; }
+  #menu-btn.shown { display: inline-flex; align-items: center; justify-content: center; }
+
+  /* Touch devices (phones + tablets) — selfview moves to the top-right so
+     it doesn't overlap the hamburger, and everything shrinks. We key on
+     `(pointer: coarse)` rather than viewport width so landscape-phone
+     (which is often >720px wide) still counts as mobile. */
+  @media (pointer: coarse), (max-width: 720px) {
+    .hud { font-size: 11px; padding: 6px 9px; }
+    #selfview { width: 96px; height: 72px;
+                top:   calc(12px + var(--safe-t)); bottom: auto;
+                right: calc(12px + var(--safe-r)); }
+    #menu-btn { display: inline-flex; align-items: center; justify-content: center; }
+  }
+
+  #menu { position: fixed; z-index: 21;
+          right:  calc(12px + var(--safe-r));
+          bottom: calc(76px + var(--safe-b));
+          width: 220px; padding: 10px; display: none;
+          background: rgba(16,18,24,0.94); backdrop-filter: blur(8px);
+          border: 1px solid rgba(255,255,255,0.12); border-radius: 12px;
+          box-shadow: 0 12px 32px rgba(0,0,0,0.5); }
+  #menu.shown { display: block; }
+  #menu button { display: block; width: 100%; text-align: left;
+                 background: transparent; color: inherit; border: 0;
+                 padding: 11px 12px; border-radius: 8px; font-size: 14px; cursor: pointer; }
+  #menu button + button { margin-top: 2px; }
+  #menu button:hover, #menu button:active { background: rgba(255,255,255,0.08); }
+  #menu hr { border: 0; border-top: 1px solid rgba(255,255,255,0.08); margin: 8px 4px; }
+
+  /* Boot overlay — shown until tracking starts or the user picks a fallback */
+  #boot { position: fixed; inset: 0; z-index: 100; display: flex; align-items: center;
+          justify-content: center; padding: calc(16px + var(--safe-t)) calc(16px + var(--safe-r))
+                                            calc(16px + var(--safe-b)) calc(16px + var(--safe-l));
+          background: rgba(8,10,16,0.92); backdrop-filter: blur(8px); overflow: auto; }
+  #boot.hidden { display: none; }
+  .card { width: 100%; max-width: 520px; padding: 24px 28px; border-radius: 14px;
+          background: #12151d; border: 1px solid rgba(255,255,255,0.08);
+          box-shadow: 0 20px 60px rgba(0,0,0,0.5); }
+  .card h1 { margin: 0 0 6px; font-size: 20px; font-weight: 600; line-height: 1.3; }
+  .card p  { margin: 6px 0 0; opacity: 0.85; font-size: 14px; line-height: 1.45; }
+  .card .status { margin-top: 14px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+                  font-size: 12px; opacity: 0.75; white-space: pre-wrap; min-height: 16px; }
+  .card .row { margin-top: 18px; display: flex; gap: 10px; flex-wrap: wrap; }
+  /* Tap targets must clear ~44px on mobile per Apple HIG. */
+  .btn { appearance: none; border: 1px solid rgba(255,255,255,0.14);
+         background: #1d2230; color: #e8edf5;
+         padding: 12px 16px; border-radius: 10px;
+         font-size: 14px; font-weight: 500; cursor: pointer; min-height: 44px;
+         flex: 1 1 auto; }
+  .btn.primary { background: #3a5bd9; border-color: #3a5bd9; }
+  .btn:hover { filter: brightness(1.15); }
+  .btn:disabled { opacity: 0.5; cursor: wait; }
+  .btn.hidden { display: none; }
+  @media (max-width: 520px) {
+    .card h1 { font-size: 18px; }
+    .btn { width: 100%; flex-basis: 100%; }
+  }
+</style>
+</head>
+<body>
+  <canvas id="stage"></canvas>
+
+  <div id="hud-top"  class="hud">FPS: --</div>
+  <div id="hud-head" class="hud hidden">head: waiting…</div>
+
+  <video id="selfview" autoplay playsinline muted class="hidden"></video>
+
+  <button id="menu-btn" aria-label="Menu">☰</button>
+  <div id="menu" role="menu">
+    <button id="menu-calibrate">Recentre origin</button>
+    <button id="menu-toggle-self">Hide / show self-view</button>
+    <button id="menu-toggle-hud">Show position HUD</button>
+    <button id="menu-pointer">Use pointer / touch</button>
+    <button id="menu-tilt">Use device tilt</button>
+    <button id="menu-camera">Use camera</button>
+    <hr />
+    <button id="menu-fullscreen">Toggle fullscreen</button>
+  </div>
+
+  <div id="boot">
+    <div class="card">
+      <h1>FishtankVR — head-tracked 3D</h1>
+      <p>Move your head — the 3D scene reacts like it's sitting behind the screen.
+         Pick a tracking source below.</p>
+      <div id="boot-status" class="status">Idle.</div>
+      <div class="row">
+        <button id="btn-start"  class="btn primary">Use camera</button>
+        <button id="btn-tilt"   class="btn hidden">Use device tilt</button>
+        <button id="btn-mouse"  class="btn">Use pointer / touch</button>
+      </div>
+    </div>
+  </div>
+
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "./vendor/three/three.module.js",
+      "three/addons/": "./vendor/three/addons/"
+    }
+  }
+  </script>
+
+  <script type="module">
+  import * as THREE from 'three';
+
+  // ────────────────────────────────────────────────────────────────────────────
+  //  DOM handles
+  // ────────────────────────────────────────────────────────────────────────────
+  const canvas      = document.getElementById('stage');
+  const selfview    = document.getElementById('selfview');
+  const bootOverlay = document.getElementById('boot');
+  const bootStatus  = document.getElementById('boot-status');
+  const btnStart    = document.getElementById('btn-start');
+  const btnTilt     = document.getElementById('btn-tilt');
+  const btnMouse    = document.getElementById('btn-mouse');
+  const hudTop      = document.getElementById('hud-top');
+  const hudHead     = document.getElementById('hud-head');
+  const menuBtn     = document.getElementById('menu-btn');
+  const menuEl      = document.getElementById('menu');
+
+  function setBootStatus(text) { bootStatus.textContent = text; }
+
+  // Feature detection — shape the UI to what the device can actually do.
+  const hasDeviceOrientation = typeof DeviceOrientationEvent !== 'undefined';
+  const isCoarsePointer      = matchMedia('(pointer: coarse)').matches;
+  // Only show the tilt button if the API exists. On desktop Chrome it exists
+  // but always returns null — still harmless; the fallback check re-hides it.
+  if (hasDeviceOrientation) btnTilt.classList.remove('hidden');
+
+  // ────────────────────────────────────────────────────────────────────────────
+  //  Three.js scene
+  // ────────────────────────────────────────────────────────────────────────────
+  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.outputColorSpace = THREE.SRGBColorSpace;
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color('#0a0b10');
+
+  const camera = new THREE.PerspectiveCamera(40, 1, 0.01, 100);
+  const CAMERA_DISTANCE = 3.0;
+  camera.position.set(0, 0, CAMERA_DISTANCE);
+  camera.lookAt(0, 0, 0);
+
+  scene.add(new THREE.HemisphereLight(0xbbd3ff, 0x2a1f14, 0.9));
+  const key = new THREE.DirectionalLight(0xffffff, 1.4);
+  key.position.set(3, 4, 5);
+  scene.add(key);
+
+  // Wide wireframe "back wall" — sized generously so extreme parallax
+  // never reveals the void past its edges.
+  const wall = new THREE.Mesh(
+    new THREE.PlaneGeometry(16, 10, 28, 16),
+    new THREE.MeshStandardMaterial({ color: '#1b2030', wireframe: true })
+  );
+  wall.position.set(0, 0, -3.5);
+  scene.add(wall);
+
+  const props = new THREE.Group();
+  scene.add(props);
+
+  // Richer palette + geometry pool → scene reads as "volumetric room",
+  // not "field of identical cubes". Each factory returns a fresh geometry
+  // so the meshes don't share rotation.
+  const palette = [
+    '#ff6b6b','#ffd166','#6bcb77','#4d96ff','#c780fa','#ffb7b2','#a0e7e5',
+    '#f9a03f','#82c0cc','#eddea4','#e07a5f','#81b29a','#f2cc8f','#3d405b',
+    '#ef476f','#06d6a0','#118ab2','#ffd6a5'
+  ];
+  const geomPool = [
+    () => new THREE.BoxGeometry(0.3, 0.3, 0.3),
+    () => new THREE.SphereGeometry(0.2, 24, 16),
+    () => new THREE.ConeGeometry(0.22, 0.5, 18),
+    () => new THREE.CylinderGeometry(0.16, 0.16, 0.45, 24),
+    () => new THREE.DodecahedronGeometry(0.24),
+    () => new THREE.IcosahedronGeometry(0.26, 0),
+    () => new THREE.OctahedronGeometry(0.24),
+    () => new THREE.TorusGeometry(0.2, 0.07, 14, 30),
+    () => new THREE.TetrahedronGeometry(0.3),
+  ];
+
+  const pick = arr => arr[Math.floor(Math.random() * arr.length)];
+
+  // 90 small-to-medium objects spread across a wide volume. Bias Z toward
+  // the back so the scene has depth; let a handful poke in FRONT of the
+  // window plane for that "coming at you" feel.
+  for (let i = 0; i < 90; i++) {
+    const g = pick(geomPool)();
+    const scale = 0.55 + Math.random() * 1.7;
+    const m = new THREE.Mesh(
+      g,
+      new THREE.MeshStandardMaterial({
+        color: pick(palette),
+        roughness: 0.25 + Math.random() * 0.6,
+        metalness: Math.random() * 0.45
+      })
+    );
+    // x: -6..6  (wider than viewport so parallax finds objects at edges)
+    // y: -4..4  (same logic vertically)
+    // z: -3.2..1.2  (most deep, a few in front of the origin)
+    m.position.set(
+      (Math.random() - 0.5) * 12,
+      (Math.random() - 0.5) * 8,
+      -3.2 + Math.random() * 4.4
+    );
+    m.rotation.set(
+      Math.random() * Math.PI * 2,
+      Math.random() * Math.PI * 2,
+      Math.random() * Math.PI * 2
+    );
+    m.scale.setScalar(scale);
+    props.add(m);
+  }
+
+  // Hero objects — big enough to anchor the composition at each corner of
+  // the scene volume, so the eye has something to track as the camera moves.
+  const knot = new THREE.Mesh(
+    new THREE.TorusKnotGeometry(0.45, 0.14, 180, 22),
+    new THREE.MeshStandardMaterial({ color: '#4bc0d9', roughness: 0.2, metalness: 0.5 })
+  );
+  knot.position.set(0, 0, 0.2);
+  props.add(knot);
+
+  const bigBall = new THREE.Mesh(
+    new THREE.SphereGeometry(0.9, 48, 32),
+    new THREE.MeshStandardMaterial({ color: '#f2a65a', roughness: 0.4 })
+  );
+  bigBall.position.set(-3.4, 0.6, -2.3);
+  props.add(bigBall);
+
+  const bigDodec = new THREE.Mesh(
+    new THREE.DodecahedronGeometry(0.85),
+    new THREE.MeshStandardMaterial({ color: '#c780fa', roughness: 0.35, metalness: 0.25 })
+  );
+  bigDodec.position.set(3.0, -0.8, -2.5);
+  props.add(bigDodec);
+
+  const bigTorus = new THREE.Mesh(
+    new THREE.TorusGeometry(0.7, 0.18, 24, 64),
+    new THREE.MeshStandardMaterial({ color: '#ffd166', roughness: 0.3, metalness: 0.3 })
+  );
+  bigTorus.position.set(2.2, 2.1, -2.8);
+  bigTorus.rotation.set(0.6, 0.4, 0);
+  props.add(bigTorus);
+
+  const bigCone = new THREE.Mesh(
+    new THREE.ConeGeometry(0.7, 1.4, 36),
+    new THREE.MeshStandardMaterial({ color: '#81b29a', roughness: 0.4 })
+  );
+  bigCone.position.set(-2.6, -1.8, -2.6);
+  bigCone.rotation.z = -0.3;
+  props.add(bigCone);
+
+  function onResize() {
+    const w = canvas.clientWidth, h = canvas.clientHeight;
+    if (w === 0 || h === 0) return;            // mid-rotation the box can briefly be 0×0
+    renderer.setSize(w, h, false);             // false = don't touch the canvas's CSS size
+    camera.aspect = w / h;
+    camera.updateProjectionMatrix();
+  }
+
+  // Resize story on mobile is messy:
+  //   - `resize` fires too early during rotation — layout hasn't settled yet.
+  //   - `orientationchange` fires BEFORE the new viewport dims are in the DOM.
+  //   - iOS Safari's URL bar collapse changes dvh/svh without firing `resize`.
+  // ResizeObserver fires AFTER layout settles, which is exactly what we want;
+  // the other listeners are belt-and-braces for engines that still miss cases.
+  new ResizeObserver(onResize).observe(canvas);
+  window.addEventListener('resize', onResize);
+  window.visualViewport?.addEventListener?.('resize', onResize);
+  // Rotation on iOS animates through an intermediate state for ~400ms;
+  // a single post-event resize isn't enough. Kick it across a few frames
+  // so we catch whatever size it lands on.
+  function retriggerAfterRotate() {
+    requestAnimationFrame(onResize);
+    setTimeout(onResize, 200);
+    setTimeout(onResize, 600);
+  }
+  window.addEventListener('orientationchange', retriggerAfterRotate);
+  screen.orientation?.addEventListener?.('change', retriggerAfterRotate);
+  onResize();
+
+  // ────────────────────────────────────────────────────────────────────────────
+  //  Screen orientation helper.
+  //
+  //  DeviceOrientationEvent's beta/gamma — and in theory the camera feed's
+  //  pixel axes — are expressed in DEVICE frame (relative to the physical
+  //  phone edges). That's wrong for parallax: we want SCREEN frame (relative
+  //  to what the user is actually looking at). When the user rotates the
+  //  phone to landscape, the "peeking left/right" axis has to follow.
+  //
+  //  Trick: the whole remapping is a 2D rotation of (x, y) by -screenAngle.
+  //  Since `screen.orientation.angle` is always 0 / 90 / 180 / 270 we can
+  //  use a switch and skip the trig.
+  // ────────────────────────────────────────────────────────────────────────────
+  function getScreenAngle() {
+    // Modern path — supported everywhere except old iOS Safari.
+    if (screen.orientation && typeof screen.orientation.angle === 'number') {
+      return screen.orientation.angle;
+    }
+    // iOS <16 fallback: window.orientation is -90 / 0 / 90 / 180. Normalise.
+    const wo = window.orientation;
+    if (typeof wo === 'number') return ((wo % 360) + 360) % 360;
+    return 0;
+  }
+  function rotateToScreen(x, y) {
+    switch (getScreenAngle()) {
+      case 90:  return { x:  y, y: -x };   // phone turned CW into landscape
+      case 180: return { x: -x, y: -y };   // portrait upside-down
+      case 270: return { x: -y, y:  x };   // phone turned CCW into landscape
+      default:  return { x,     y     };   // portrait-primary
+    }
+  }
+
+  // ────────────────────────────────────────────────────────────────────────────
+  //  Head source — three flavours: webcam, pointer, device tilt.
+  //  All return { x, y, z, confidence, label } in SCREEN frame —
+  //  x ∈ [-1,1] across the visible width (left→right),
+  //  y ∈ [-1,1] across the visible height (down→up),
+  //  z is a depth hint (optional).
+  // ────────────────────────────────────────────────────────────────────────────
+  let headSource = {
+    getHead: () => ({ x: 0, y: 0, z: 0, confidence: 0, label: 'idle' }),
+    stop: () => {},
+    calibrate: () => {}
+  };
+
+  // ─── Pointer / touch fallback ─────────────────────────────────────────────
+  function usePointerHead() {
+    let mx = 0, my = 0;
+    function onMove(e) {
+      mx = (e.clientX / window.innerWidth)  * 2 - 1;
+      my = -((e.clientY / window.innerHeight) * 2 - 1);
+    }
+    // pointermove covers mouse + touch + pen in one listener.
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerdown', onMove);
+    headSource = {
+      getHead: () => ({ x: mx, y: my, z: 0, confidence: 1, label: 'pointer' }),
+      stop: () => {
+        window.removeEventListener('pointermove', onMove);
+        window.removeEventListener('pointerdown', onMove);
+      },
+      calibrate: () => { mx = 0; my = 0; }
+    };
+    selfview.classList.add('hidden');
+  }
+
+  // ─── Device-orientation (tilt) fallback ───────────────────────────────────
+  async function useTiltHead() {
+    // iOS 13+ requires an explicit permission gesture for DeviceOrientationEvent.
+    // Android just fires events directly.
+    if (typeof DeviceOrientationEvent.requestPermission === 'function') {
+      const state = await DeviceOrientationEvent.requestPermission();
+      if (state !== 'granted') {
+        throw new Error('Device-orientation permission denied');
+      }
+    }
+
+    let beta = 0, gamma = 0, haveSample = false;
+    let origin = { beta: 0, gamma: 0 };
+
+    function onOrient(e) {
+      // beta  = front-to-back tilt, degrees (-180..180). Face-up-flat ≈ 0.
+      // gamma = left-to-right tilt, degrees (-90..90).
+      // These are DEVICE frame — we translate to screen frame in getHead().
+      if (typeof e.beta === 'number' && typeof e.gamma === 'number') {
+        beta  = e.beta;
+        gamma = e.gamma;
+        if (!haveSample) {
+          // Lock origin on first sample — assume the user is holding the phone
+          // "naturally" at that moment.
+          origin.beta  = beta;
+          origin.gamma = gamma;
+          haveSample = true;
+        }
+      }
+    }
+    window.addEventListener('deviceorientation', onOrient);
+
+    // On screen rotation, the mapping device→screen changes AND the user's
+    // comfortable "neutral hold" has very different raw gamma/beta values
+    // (e.g. portrait neutral of beta≈60° becomes landscape neutral of
+    // gamma≈±60°). Snap the origin to the current sample so the scene stays
+    // centred after the flip instead of pinning to an extreme.
+    function onScreenRotate() {
+      origin.beta  = beta;
+      origin.gamma = gamma;
+    }
+    screen.orientation?.addEventListener?.('change', onScreenRotate);
+    window.addEventListener('orientationchange', onScreenRotate);
+
+    // Wait briefly for a real sample before resolving. If none shows up,
+    // the API exists but isn't firing (common on desktop Chrome without sensors).
+    await new Promise((resolve, reject) => {
+      const t0 = performance.now();
+      (function check() {
+        if (haveSample) return resolve();
+        if (performance.now() - t0 > 1500) return reject(new Error('No orientation samples — sensor unavailable'));
+        requestAnimationFrame(check);
+      })();
+    });
+
+    selfview.classList.add('hidden');
+
+    // Map ±25° of tilt to ±1 of normalised head coord. Feels right for phones.
+    const TILT_RANGE = 25;
+
+    headSource = {
+      getHead: () => {
+        // Device-frame deltas: dx = gamma (left/right edge tilt),
+        //                     dy = beta  (top/bottom edge tilt).
+        const dx = (gamma - origin.gamma) / TILT_RANGE;
+        const dy = (beta  - origin.beta)  / TILT_RANGE;
+        // Rotate into screen frame so "tilt the visible top edge away" is
+        // always "look up" regardless of whether the phone is held portrait
+        // or landscape-either-way.
+        const s = rotateToScreen(dx, dy);
+        return {
+          x: Math.max(-1, Math.min(1, s.x)),
+          y: Math.max(-1, Math.min(1, s.y)),
+          z: 0, confidence: 1, label: `tilt@${getScreenAngle()}°`
+        };
+      },
+      stop: () => {
+        window.removeEventListener('deviceorientation', onOrient);
+        screen.orientation?.removeEventListener?.('change', onScreenRotate);
+        window.removeEventListener('orientationchange', onScreenRotate);
+      },
+      calibrate: () => { origin.beta = beta; origin.gamma = gamma; }
+    };
+  }
+
+  // ─── Webcam + MediaPipe Face Landmarker ───────────────────────────────────
+  async function useWebcamHead() {
+    setBootStatus('Requesting camera…');
+    let stream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          // ideal only — some mobile cameras refuse exact 640×480
+          width:  { ideal: 640 },
+          height: { ideal: 480 },
+          facingMode: 'user'
+        },
+        audio: false
+      });
+    } catch (err) {
+      // Surface the common failure modes with actionable wording.
+      if (err.name === 'NotAllowedError') {
+        throw new Error('Camera permission denied. Tap "Use pointer" or "Use device tilt" instead.');
+      }
+      if (err.name === 'NotFoundError') {
+        throw new Error('No camera found on this device.');
+      }
+      if (err.name === 'NotReadableError') {
+        throw new Error('Camera is busy in another app.');
+      }
+      // Most important mobile case: insecure context.
+      if (!window.isSecureContext) {
+        throw new Error('getUserMedia needs HTTPS. Open this page over https:// (see README — mobile section).');
+      }
+      throw err;
+    }
+
+    selfview.srcObject = stream;
+    selfview.classList.remove('hidden');
+    await selfview.play().catch(() => {});
+
+    setBootStatus('Loading face landmarker…');
+    const vision = await import('./vendor/mediapipe/vision_bundle.mjs');
+    const filesetResolver = await vision.FilesetResolver.forVisionTasks(
+      './vendor/mediapipe/wasm'
+    );
+
+    // GPU delegate is faster but frequently fails on mobile (WebGL2 limits,
+    // some Android devices reject shared contexts). Try GPU → fall back to CPU.
+    let landmarker, delegateUsed = 'GPU';
+    const baseOpts = (delegate) => ({
+      baseOptions: {
+        modelAssetPath: './vendor/mediapipe/models/face_landmarker.task',
+        delegate
+      },
+      runningMode: 'VIDEO',
+      numFaces: 1,
+      outputFaceBlendshapes: false,
+      outputFacialTransformationMatrixes: false
+    });
+    try {
+      landmarker = await vision.FaceLandmarker.createFromOptions(filesetResolver, baseOpts('GPU'));
+    } catch (gpuErr) {
+      console.warn('[face-tracker] GPU delegate failed, retrying on CPU:', gpuErr);
+      setBootStatus('GPU tracking unavailable — retrying on CPU…');
+      landmarker = await vision.FaceLandmarker.createFromOptions(filesetResolver, baseOpts('CPU'));
+      delegateUsed = 'CPU';
+    }
+    setBootStatus(`Tracking started (${delegateUsed}).`);
+
+    const NOSE = 1, EYE_L = 33, EYE_R = 263;
+    let raw = { x: 0, y: 0, z: 0, confidence: 0 };
+    let origin = { x: 0, y: 0, z: 0 };
+    let smoothed = { x: 0, y: 0, z: 0, confidence: 0 };
+    const SMOOTH = 0.25;
+    let alive = true;
+
+    function tick() {
+      if (!alive) return;
+      if (selfview.readyState >= 2) {
+        const now = performance.now();
+        const result = landmarker.detectForVideo(selfview, now);
+        if (result?.faceLandmarks?.length) {
+          const lm = result.faceLandmarks[0];
+          const eyeL = lm[EYE_L], eyeR = lm[EYE_R];
+          const cx = (eyeL.x + eyeR.x) * 0.5;
+          const cy = (eyeL.y + eyeR.y) * 0.5;
+          const spread = Math.hypot(eyeR.x - eyeL.x, eyeR.y - eyeL.y);
+          const depth  = spread > 0 ? 0.12 / spread : 1.0;
+          // Mirror X so "viewer moves right" maps to "virtual camera right".
+          // The front camera is a mirror of the user's frame: when the user's
+          // head moves to THEIR right, the raw feed sees the face move to
+          // ITS left (cx decreases). Without flipping the sign here, parallax
+          // runs backwards on the horizontal axis — left/right feels inverted,
+          // while up/down (already flipped via -cy below to account for
+          // image-Y-down vs world-Y-up) looks correct.
+          // NOTE: CSS does `scaleX(-1)` on the self-view for display, but
+          // that's only the *visual* mirror; MediaPipe reads the unmirrored
+          // stream, so the correction has to happen here.
+          raw.x = -(cx * 2 - 1);
+          raw.y = -(cy * 2 - 1);
+          raw.z = depth;
+          raw.confidence = 1.0;
+        } else {
+          raw.confidence *= 0.9;
+        }
+      }
+      requestAnimationFrame(tick);
+    }
+    requestAnimationFrame(tick);
+
+    headSource = {
+      getHead: () => {
+        const tx = raw.x - origin.x;
+        const ty = raw.y - origin.y;
+        const tz = raw.z - origin.z;
+        smoothed.x += (tx - smoothed.x) * SMOOTH;
+        smoothed.y += (ty - smoothed.y) * SMOOTH;
+        smoothed.z += (tz - smoothed.z) * SMOOTH;
+        smoothed.confidence = raw.confidence;
+        return { ...smoothed, label: `face/${delegateUsed.toLowerCase()}` };
+      },
+      calibrate: () => { origin = { x: raw.x, y: raw.y, z: raw.z }; },
+      stop: () => {
+        alive = false;
+        stream.getTracks().forEach(t => t.stop());
+        landmarker.close?.();
+      }
+    };
+  }
+
+  // ────────────────────────────────────────────────────────────────────────────
+  //  Parallax
+  // ────────────────────────────────────────────────────────────────────────────
+  const PARALLAX = { x: 0.8, y: 0.5, z: 0.3 };
+
+  function updateCamera(head) {
+    const px = head.x * PARALLAX.x;
+    const py = head.y * PARALLAX.y;
+    const pz = CAMERA_DISTANCE + (head.z ? (head.z - 0.6) * PARALLAX.z : 0);
+    camera.position.set(px, py, pz);
+    camera.lookAt(0, 0, 0);
+  }
+
+  // ────────────────────────────────────────────────────────────────────────────
+  //  FPS + render loop
+  // ────────────────────────────────────────────────────────────────────────────
+  let fpsFrames = 0, fpsAcc = 0, fpsDisplay = 0, last = performance.now();
+
+  function frame() {
+    const now = performance.now();
+    const dt  = (now - last) / 1000;
+    last = now;
+    fpsAcc += dt; fpsFrames++;
+    if (fpsAcc >= 0.5) {
+      fpsDisplay = Math.round(fpsFrames / fpsAcc);
+      fpsFrames = 0; fpsAcc = 0;
+    }
+
+    const head = headSource.getHead();
+    updateCamera(head);
+    knot.rotation.x += dt * 0.3;
+    knot.rotation.y += dt * 0.5;
+
+    renderer.render(scene, camera);
+
+    hudTop.textContent = `FPS: ${fpsDisplay}`;
+    hudHead.textContent =
+      `head: (${head.x.toFixed(2)}, ${head.y.toFixed(2)}, ${head.z.toFixed(2)})  ` +
+      `conf: ${head.confidence.toFixed(2)}  src: ${head.label ?? '?'}`;
+
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+
+  // ────────────────────────────────────────────────────────────────────────────
+  //  Mode switching — used by both the boot card and the mobile menu.
+  // ────────────────────────────────────────────────────────────────────────────
+  async function switchMode(modeFn, label) {
+    setBootStatus(`Starting ${label}…`);
+    headSource.stop?.();
+    await modeFn();
+    bootOverlay.classList.add('hidden');
+    menuEl.classList.remove('shown');
+  }
+
+  async function tryStart(modeFn, label) {
+    btnStart.disabled = true; btnTilt.disabled = true; btnMouse.disabled = true;
+    try {
+      await switchMode(modeFn, label);
+    } catch (err) {
+      console.error(err);
+      setBootStatus('Failed: ' + (err?.message ?? err));
+    } finally {
+      btnStart.disabled = false; btnTilt.disabled = false; btnMouse.disabled = false;
+    }
+  }
+
+  btnStart .addEventListener('click', () => tryStart(useWebcamHead, 'camera'));
+  btnTilt  .addEventListener('click', () => tryStart(useTiltHead,   'device tilt'));
+  btnMouse .addEventListener('click', () => tryStart(async () => usePointerHead(), 'pointer'));
+
+  // ────────────────────────────────────────────────────────────────────────────
+  //  Menu + keyboard controls
+  // ────────────────────────────────────────────────────────────────────────────
+  menuBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    menuEl.classList.toggle('shown');
+  });
+  // Dismiss menu on outside tap.
+  document.addEventListener('pointerdown', (e) => {
+    if (!menuEl.contains(e.target) && e.target !== menuBtn) menuEl.classList.remove('shown');
+  });
+
+  document.getElementById('menu-calibrate')   .addEventListener('click', () => { headSource.calibrate?.(); menuEl.classList.remove('shown'); });
+  document.getElementById('menu-toggle-self') .addEventListener('click', () => { selfview.classList.toggle('hidden'); menuEl.classList.remove('shown'); });
+  document.getElementById('menu-toggle-hud')  .addEventListener('click', (e) => {
+    // Off by default; this flips it and relabels so the user knows the
+    // current state without a separate indicator.
+    hudHead.classList.toggle('hidden');
+    e.currentTarget.textContent = hudHead.classList.contains('hidden')
+      ? 'Show position HUD'
+      : 'Hide position HUD';
+    menuEl.classList.remove('shown');
+  });
+  document.getElementById('menu-pointer')     .addEventListener('click', () => tryStart(async () => usePointerHead(), 'pointer'));
+  document.getElementById('menu-tilt')        .addEventListener('click', () => tryStart(useTiltHead, 'device tilt'));
+  document.getElementById('menu-camera')      .addEventListener('click', () => tryStart(useWebcamHead, 'camera'));
+  document.getElementById('menu-fullscreen')  .addEventListener('click', () => {
+    if (!document.fullscreenElement) document.documentElement.requestFullscreen?.();
+    else                              document.exitFullscreen?.();
+    menuEl.classList.remove('shown');
+  });
+
+  window.addEventListener('keydown', (e) => {
+    if (e.code === 'KeyR') headSource.calibrate?.();
+    if (e.code === 'KeyH') selfview.classList.toggle('hidden');
+    if (e.code === 'KeyM') tryStart(async () => usePointerHead(), 'pointer');
+  });
+  </script>
+</bo

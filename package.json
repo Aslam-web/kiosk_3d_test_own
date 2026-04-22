@@ -1,0 +1,19 @@
+{
+  "name": "fishtank-vr",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Head-tracked 3D kiosk prototype. Vanilla HTML frontend + Tauri desktop shell.",
+  "type": "module",
+  "scripts": {
+    "fetch": "node scripts/fetch-vendor.mjs",
+    "serve": "npx -y serve src -l 8000",
+    "serve:https": "npx -y serve src -l 8443 --ssl-cert cert.pem --ssl-key key.pem",
+    "tunnel": "node scripts/tunnel.mjs",
+    "tauri": "tauri",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.1.0"
+  }
+}

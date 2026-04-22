@@ -1,0 +1,9 @@
+{
+  "$schema": "../gen/schemas/windows-schema.json",
+  "identifier": "default",
+  "description": "Minimal capabilities — the app is pure frontend, it doesn't need to invoke any Tauri commands.",
+  "windows": ["main"],
+  "permissions": [
+    "core:default"
+  ]
+}
