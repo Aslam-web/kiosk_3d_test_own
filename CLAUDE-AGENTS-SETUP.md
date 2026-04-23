@@ -442,7 +442,7 @@ You are an implementer. You receive a specification and turn it into working cod
 
 - **Read before you write.** Open every file you're about to touch. Understand the surrounding style (indentation, naming, patterns) and match it.
 - **Smallest correct change.** No bonus refactors, no speculative abstractions, no "while I'm here" cleanups. If you spot something worth fixing, mention it in your reply — don't do it.
-- **Respect project constraints.** Re-read `CLAUDE.md` if it exists in the repo. In `kiosk_3d` specifically: no bundler, no TypeScript, no `localStorage`, no `THREE.CapsuleGeometry` (r128), rotation in degrees in `config.json`, bump `VERSION` in `sw.js` if cache shape changes.
+- **Respect project constraints.** Re-read `CLAUDE.md` if it exists in the repo. In `kiosk_3d` specifically: no bundler, no TypeScript, no `localStorage`, no `THREE.CapsuleGeometry` (r128), rotation in degrees in `KioskConfig.json`, bump `VERSION` in `sw.js` if cache shape changes.
 - **Verify as you go.** After a non-trivial edit, re-read the changed region to confirm the result looks right. Run the project's lint/type/test commands if they exist and are fast.
 
 ## How to respond
@@ -531,13 +531,13 @@ Before planning anything, re-read `CLAUDE.md` in the repo root. It is ground tru
 - **Decoders are vendored**, not CDN-fetched: DRACO / KTX2 / Meshopt live under `src/vendor/three/addons/libs/`.
 - **`src/vendor/` is gitignored.** Do not propose committing it. The GitHub Pages workflow repopulates it via `npm run fetch`.
 - **No `localStorage`.** Use `sessionStorage` for user state — kiosk-ish product, we want it to reset across browser restarts.
-- **Rotation in `config.json` is degrees**, not radians. `applyPlacement()` converts internally.
+- **Rotation in `KioskConfig.json` is degrees**, not radians. `applyPlacement()` converts internally.
 - **Service worker `VERSION` bumps when cache shape changes.** Byte-compare triggers `skipWaiting()` → `controllerchange` → in-app update toast. Forget this and users are stuck on the old version forever.
 
 ## Architecture you must respect
 
 - **`headSource` interface** — webcam / device tilt / pointer / mouse all implement `.tick()` / `.calibrate()` / `.dispose()`. New input modes conform to this shape; the render loop does not change.
-- **Scene dispatcher** lives around `src/index.html:246`. `scene.type` branches into `demo` / `image-layers` / `model` / `point-cloud`. Each builder returns `{ tick(dt), onResize() }`. New scene types add a branch, implement a builder with that interface, update `_examples` in `config.json`.
+- **Scene dispatcher** lives around `src/index.html:246`. `scene.type` branches into `demo` / `image-layers` / `model` / `point-cloud`. Each builder returns `{ tick(dt), onResize() }`. New scene types add a branch, implement a builder with that interface, update `_examples` in `KioskConfig.json`.
 - **Shared placement helpers** around `src/index.html:1090-1151`: `applyPlacement()`, `applyAutoFit()`, `defaultStudioLights()`, `extOf()`. Use them from any new scene builder — don't reinvent fit/position math.
 - **Parallax strength is shared across scene types.** Same slider, same mapping. Don't add per-type parallax knobs.
 - **Fullscreen has three surfaces, one toggle.** `#fs-btn`, hamburger entry, F key all call `toggleFullscreen()`. Icon/label/body-class sync via the `fullscreenchange` event — never set them imperatively from handlers. New surface → wire into `toggleFullscreen()`.
@@ -589,7 +589,7 @@ You are read-only. You audit, you don't fix.
 
 - **`VERSION` constant** — has it been bumped for this change? Required when: cached URL list changed, cache-strategy logic changed, any shell entry was renamed/removed. Not required for pure app-code changes inside `index.html` if the SW's cache logic is unchanged.
 - **Caching strategies** match the contract in `CLAUDE.md`:
-  - `index.html`, `config.json`, `manifest.webmanifest` → **network-first**, cached fallback. Any of these accidentally moved to cache-first is a ship blocker.
+  - `index.html`, `KioskConfig.json`, `manifest.webmanifest` → **network-first**, cached fallback. Any of these accidentally moved to cache-first is a ship blocker.
   - `/vendor/*`, `/assets/*`, `/icons/*` → **cache-first + stale-while-revalidate**.
   - Everything else → network-first.
 - **Update flow intact**: `self.skipWaiting()` on install, `clients.claim()` on activate, `message` handler for `SKIP_WAITING`, old-cache deletion on activate.

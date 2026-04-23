@@ -25,7 +25,7 @@ bundler, reread this paragraph.
 kiosk_3d/
 ├── src/                          ← what GitHub Pages publishes
 │   ├── index.html                ← ~1500 lines, the entire app
-│   ├── config.json               ← scene config (see Scene system below)
+│   ├── KioskConfig.json               ← scene config (see Scene system below)
 │   ├── manifest.webmanifest      ← PWA install metadata
 │   ├── sw.js                     ← service worker (offline + update flow)
 │   ├── icons/                    ← PWA icons (180/192/512/512-maskable/favicon)
@@ -53,7 +53,7 @@ else in the render loop changes. When adding new input modes, conform
 to that shape.
 
 ### Scene builders via a config-driven dispatcher
-`src/config.json` has a `scene.type` field with four values:
+`src/KioskConfig.json` has a `scene.type` field with four values:
 
 - `demo` — procedural torus-knot + floating geometry (default, no assets).
 - `image-layers` — stacked 2D media planes at configurable depths.
@@ -63,7 +63,7 @@ to that shape.
 Each builder returns `{ tick(dt), onResize() }` hooks that the render
 loop drives. When adding a scene type: add a branch in the dispatcher
 around line 246 of `index.html`, implement a builder that returns that
-interface, document the schema in `config.json`'s `$schema_notes`, and
+interface, document the schema in `KioskConfig.json`'s `$schema_notes`, and
 add a `_examples.yourType` block so users can copy-paste.
 
 **Shared placement helpers** — `applyPlacement()` / `applyAutoFit()` /
@@ -92,7 +92,7 @@ iPhone users through Share → Add to Home Screen.
 
 **Service worker (`src/sw.js`) caching strategy:**
 
-- HTML, `config.json`, `manifest.webmanifest` → **network-first** with
+- HTML, `KioskConfig.json`, `manifest.webmanifest` → **network-first** with
   cached fallback. Deploys land immediately on next launch.
 - `/vendor/*`, `/assets/*`, `/icons/*` → **cache-first + stale-while-revalidate**.
   The 44 MB vendor bundle loads instantly from cache; the background
@@ -136,7 +136,7 @@ new version. No uninstall/reinstall dance.
   `undefined` even on versions that support the API). We probe
   `documentElement.requestFullscreen` / `webkitRequestFullscreen`
   directly. See the `reqFS` block in `index.html`. Don't regress this.
-- **Rotation units are degrees, not radians** in `config.json`. Easier
+- **Rotation units are degrees, not radians** in `KioskConfig.json`. Easier
   to eyeball; converted in `applyPlacement()`. Mention this in every
   example.
 - **`screen.orientation.lock()` only works in PWA standalone mode on
@@ -156,7 +156,7 @@ new version. No uninstall/reinstall dance.
 ### Assets convention
 - Asset archives (`*.zip`) are gitignored — unpacked folders next to them
   are what the app loads. `src/assets/*.zip` is in `.gitignore`.
-- `src/config.json` paths are **relative to `src/`**, not to the JSON
+- `src/KioskConfig.json` paths are **relative to `src/`**, not to the JSON
   file (e.g. `"assets/shibuya/bg.jpg"`).
 
 ## Conventions (enforce these)
@@ -166,7 +166,7 @@ new version. No uninstall/reinstall dance.
 - **Comments pay for themselves**: function-level "what + why" comments
   earn their keep. The codebase is one long file — navigation depends
   on the banner comments. Preserve and extend them.
-- **Async boundaries**: scene builders are `async` because config.json
+- **Async boundaries**: scene builders are `async` because KioskConfig.json
   fetch is async; keep the render loop sync.
 - **No `localStorage`** for user state — we use `sessionStorage` (see
   iOS install banner dismissal). Kiosk-ish product; we don't want

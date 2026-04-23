@@ -46,7 +46,7 @@ Output is a ~10 MB `.msi`/`.exe` installer at `src-tauri/target/release/bundle/`
 
 ## Scenes
 
-The rendered scene is chosen by `src/config.json`. Four types ship today:
+The rendered scene is chosen by `src/KioskConfig.json`. Four types ship today:
 
 `"demo"` (default) — the procedural floating-geometry fishtank. No assets needed.
 
@@ -57,7 +57,7 @@ The rendered scene is chosen by `src/config.json`. Four types ship today:
 `"point-cloud"` — a single point cloud (.ply .pcd .xyz).
 
 All four share the same head-tracking parallax. Full working examples for
-each type live under `_examples.*` in `src/config.json` — copy a block into
+each type live under `_examples.*` in `src/KioskConfig.json` — copy a block into
 `scene` to activate it.
 
 ### Image layers

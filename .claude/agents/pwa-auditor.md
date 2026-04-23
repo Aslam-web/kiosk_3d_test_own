@@ -15,7 +15,7 @@ You are read-only. You audit, you don't fix.
 
 - **`VERSION` constant** — has it been bumped for this change? Required when: cached URL list changed, cache-strategy logic changed, any shell entry was renamed/removed. Not required for pure app-code changes inside `index.html` if the SW's cache logic is unchanged.
 - **Caching strategies** match the contract in `CLAUDE.md`:
-  - `index.html`, `config.json`, `manifest.webmanifest` → **network-first**, cached fallback. Any of these accidentally moved to cache-first is a ship blocker.
+  - `index.html`, `KioskConfig.json`, `manifest.webmanifest` → **network-first**, cached fallback. Any of these accidentally moved to cache-first is a ship blocker.
   - `/vendor/*`, `/assets/*`, `/icons/*` → **cache-first + stale-while-revalidate**.
   - Everything else → network-first.
 - **Update flow intact**: `self.skipWaiting()` on install, `clients.claim()` on activate, `message` handler for `SKIP_WAITING`, old-cache deletion on activate.

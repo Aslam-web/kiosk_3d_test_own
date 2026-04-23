@@ -368,7 +368,6 @@
 
   <button id="menu-btn" aria-label="Menu">☰</button>
   <div id="menu" role="menu">
-    <button id="menu-calibrate">Recentre origin</button>
     <button id="menu-pointer">Use pointer / touch</button>
     <button id="menu-tilt">Use device tilt</button>
     <button id="menu-camera">Use camera</button>
@@ -450,7 +449,7 @@
   scene.add(key);
 
   // ────────────────────────────────────────────────────────────────────────────
-  //  Parallax — strength knobs are declared here (not below) so `config.json`
+  //  Parallax — strength knobs are declared here (not below) so `KioskConfig.json`
   //  can override them before the render loop starts reading from them.
   // ────────────────────────────────────────────────────────────────────────────
   const PARALLAX = { x: 0.8, y: 0.5, z: 0.3 };
@@ -458,18 +457,25 @@
   // ────────────────────────────────────────────────────────────────────────────
   //  Scene dispatcher. `sceneHooks.tick(dt)` runs each frame;
   //  `sceneHooks.onResize()` runs whenever the canvas dims change.
-  //  Populated asynchronously from config.json — the render loop starts
+  //  Populated asynchronously from KioskConfig.json — the render loop starts
   //  immediately and shows just the background colour until the scene is ready.
   // ────────────────────────────────────────────────────────────────────────────
   let sceneHooks = { tick: () => {}, onResize: () => {} };
 
+  // World-space axis-aligned bounding box of the active scene — populated by
+  // scene builders after placement. Drives the head-parallax edge clamp in
+  // `updateCamera` so the camera can't translate far enough to reveal the
+  // void past the scene. `null` = no clamp (e.g. demo, image-layers — those
+  // don't have a single bbox worth defending).
+  let sceneBounds = null;  // { center: THREE.Vector3, size: THREE.Vector3 }
+
   (async function buildSceneFromConfig() {
     let cfg = null;
     try {
-      const res = await fetch('./config.json', { cache: 'no-cache' });
+      const res = await fetch('./KioskConfig.json', { cache: 'no-cache' });
       if (res.ok) cfg = await res.json();
     } catch (err) {
-      console.warn('[config] could not fetch config.json:', err);
+      console.warn('[config] could not fetch KioskConfig.json:', err);
     }
     if (cfg?.scene?.background) {
       scene.background = new THREE.Color(cfg.scene.background);
@@ -749,7 +755,13 @@
 
     const NOSE = 1, EYE_L = 33, EYE_R = 263;
     let raw = { x: 0, y: 0, z: 0, confidence: 0 };
+    // Origin X/Y stay at 0 on purpose: the UX contract is "face at the centre
+    // of the camera frame ⇒ scene at its default position". Origin Z is
+    // auto-calibrated on the first confident sample so the user's natural
+    // viewing distance is the neutral depth — otherwise sitting at a normal
+    // distance would push the scene by the Z parallax baseline.
     let origin = { x: 0, y: 0, z: 0 };
+    let zCalibrated = false;
     let smoothed = { x: 0, y: 0, z: 0, confidence: 0 };
     const SMOOTH = 0.25;
     let alive = true;
@@ -780,6 +792,7 @@
           raw.y = -(cy * 2 - 1);
           raw.z = depth;
           raw.confidence = 1.0;
+          if (!zCalibrated) { origin.z = raw.z; zCalibrated = true; }
         } else {
           raw.confidence *= 0.9;
         }
@@ -799,7 +812,10 @@
         smoothed.confidence = raw.confidence;
         return { ...smoothed, label: `face/${delegateUsed.toLowerCase()}` };
       },
-      calibrate: () => { origin = { x: raw.x, y: raw.y, z: raw.z }; },
+      // `calibrate()` is preserved as a no-op so the headSource interface
+      // remains uniform across modes, but there's no UI entry point — Z
+      // is auto-calibrated on first detection (see tick loop above).
+      calibrate: () => {},
       stop: () => {
         alive = false;
         stream.getTracks().forEach(t => t.stop());
@@ -809,13 +825,50 @@
   }
 
   // ────────────────────────────────────────────────────────────────────────────
-  //  Parallax — `PARALLAX` was declared earlier so config.json can override it.
+  //  Parallax — `PARALLAX` was declared earlier so KioskConfig.json can override it.
   // ────────────────────────────────────────────────────────────────────────────
 
   function updateCamera(head) {
-    const px = head.x * PARALLAX.x;
-    const py = head.y * PARALLAX.y;
+    let px = head.x * PARALLAX.x;
+    let py = head.y * PARALLAX.y;
     const pz = CAMERA_DISTANCE + (head.z ? (head.z - 0.6) * PARALLAX.z : 0);
+
+    // Edge clamp — stop head-parallax from translating the camera far enough
+    // to see past the scene's edges into the void. Only active when a scene
+    // builder has published `sceneBounds` (point-cloud, model); no-op for
+    // demo / image-layers.
+    //
+    // Geometry: the camera always looks at (0,0,0). For a camera at
+    // (cx, cy, pz), the screen-centre ray hits the scene depth plane
+    // z=sceneZ at (cx·sceneZ/pz, cy·sceneZ/pz). The visible frustum at that
+    // plane has half-height `dist·tan(FOV/2)` and half-width `halfH·aspect`.
+    // We clamp (cx, cy) so the frustum edges stay inside the scene bbox.
+    // If the scene is smaller than the frustum on an axis, parallax on that
+    // axis is zeroed (bigger `fitSize` / closer `position.z` would fix it).
+    if (sceneBounds) {
+      const sceneZ = sceneBounds.center.z;
+      const dist = Math.abs(pz - sceneZ);
+      const halfFovY = (camera.fov * Math.PI / 180) / 2;
+      const halfH = dist * Math.tan(halfFovY);
+      const halfW = halfH * camera.aspect;
+      const shiftGainX = Math.abs(sceneZ) > 1e-4 ? pz / Math.abs(sceneZ) : Infinity;
+      const shiftGainY = shiftGainX;
+      const maxShiftX = sceneBounds.size.x / 2 - halfW;
+      const maxShiftY = sceneBounds.size.y / 2 - halfH;
+      if (maxShiftX > 0) {
+        const limit = maxShiftX * shiftGainX;
+        px = Math.max(-limit, Math.min(limit, px));
+      } else {
+        px = 0;
+      }
+      if (maxShiftY > 0) {
+        const limit = maxShiftY * shiftGainY;
+        py = Math.max(-limit, Math.min(limit, py));
+      } else {
+        py = 0;
+      }
+    }
+
     camera.position.set(px, py, pz);
     camera.lookAt(0, 0, 0);
   }
@@ -889,7 +942,6 @@
     if (!menuEl.contains(e.target) && e.target !== menuBtn) menuEl.classList.remove('shown');
   });
 
-  document.getElementById('menu-calibrate')   .addEventListener('click', () => { headSource.calibrate?.(); menuEl.classList.remove('shown'); });
   document.getElementById('menu-toggle-self') .addEventListener('click', (e) => {
     selfview.classList.toggle('hidden');
     const isShown = !selfview.classList.contains('hidden');
@@ -1158,7 +1210,6 @@
   });
 
   window.addEventListener('keydown', (e) => {
-    if (e.code === 'KeyR') headSource.calibrate?.();
     if (e.code === 'KeyH') selfview.classList.toggle('hidden');
     if (e.code === 'KeyM') tryStart(async () => usePointerHead(), 'pointer');
     if (e.code === 'KeyF') { dismissFSHint(); toggleFullscreen(); }
@@ -1458,6 +1509,7 @@
     scene.add(object);
 
     applyPlacement(object, sceneCfg);
+    sceneBounds = computeSceneBounds(object);
     return {
       tick: (dt) => { mixer?.update(dt); },
       onResize: () => {}
@@ -1569,6 +1621,7 @@
     const points = new THREE.Points(geom, mat);
     scene.add(points);
     applyPlacement(points, sceneCfg);
+    sceneBounds = computeSceneBounds(points);
 
     return { tick: () => {}, onResize: () => {} };
   }
@@ -1610,15 +1663,36 @@
   }
 
   // Auto-fit: center on origin, then scale so longest bbox axis == fitSize.
+  // Record the world-space AABB of a built scene for the render loop's
+  // edge clamp. Call AFTER `applyPlacement` so the bbox reflects fit +
+  // rotation + position. Returns { center, size } or null for empty scenes.
+  function computeSceneBounds(object) {
+    const box = new THREE.Box3().setFromObject(object);
+    if (box.isEmpty()) return null;
+    const center = new THREE.Vector3(); box.getCenter(center);
+    const size   = new THREE.Vector3(); box.getSize(size);
+    return { center, size };
+  }
+
   function applyAutoFit(object, fitSize) {
     const box = new THREE.Box3().setFromObject(object);
     if (box.isEmpty()) return;
     const size = new THREE.Vector3(); box.getSize(size);
-    const center = new THREE.Vector3(); box.getCenter(center);
     const maxAxis = Math.max(size.x, size.y, size.z) || 1;
     const k = fitSize / maxAxis;
-    // Pull to origin first, then scale about origin by k.
-    object.position.sub(center.multiplyScalar(k));
+    // Translate vertex data so bbox center == local origin. Crucial for
+    // point clouds / single meshes: without this, a config rotation would
+    // pivot around the source file's origin (often a scanner's floor
+    // anchor), visibly shifting the object off-screen. `geometry.center()`
+    // mutates the buffer in place — cheap, and we only load each asset once.
+    if (object.geometry?.center) {
+      object.geometry.center();
+    } else {
+      // Composite objects (e.g. GLTF Groups) don't have a single geometry.
+      // Fall back to offsetting the object position; rotation caveats apply.
+      const center = new THREE.Vector3(); box.getCenter(center);
+      object.position.sub(center.multiplyScalar(k));
+    }
     object.scale.multiplyScalar(k);
   }
 

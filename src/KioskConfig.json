@@ -43,8 +43,16 @@
   ],
 
   "scene": {
-    "type": "demo",
-    "background": "#0a0b10"
+    "type": "point-cloud",
+    "background": "#05070c",
+    "src": "assets/0.ply",
+    "fit": "auto",
+    "fitSize": 7.0,
+    "position": { "x": 0, "y": 0, "z": -1.2 },
+    "rotation": { "x": 180, "y": 0, "z": 0 },
+    "pointSize": 0.011,
+    "useVertexColors": true,
+    "pointColor": "#ffffff"
   },
 
   "parallax": {
@@ -52,6 +60,12 @@
   },
 
   "_examples": {
+    "demo": {
+      "type": "demo",
+      "background": "#0a0b10"
+    },
+
+
     "imageLayersShibuya": {
       "type": "image-layers",
       "background": "#0a0b10",

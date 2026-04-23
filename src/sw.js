@@ -7,7 +7,7 @@
 // day they installed.
 //
 // Caching strategy:
-//   • HTML, config.json, manifest   → network-first (so deploys land
+//   • HTML, KioskConfig.json, manifest   → network-first (so deploys land
 //     immediately, with cached fallback if offline).
 //   • /vendor/* and /assets/*       → cache-first with stale-while-revalidate
 //     (the ~44 MB Three.js + MediaPipe bundle and media files rarely change;
@@ -27,7 +27,7 @@
 // Version bump protocol: change VERSION below to purge all caches. Also
 // bump this on any breaking change to the caching rules.
 
-const VERSION = 'v3';
+const VERSION = 'v4';
 const STATIC_CACHE  = `fishtank-static-${VERSION}`;
 const RUNTIME_CACHE = `fishtank-runtime-${VERSION}`;
 
@@ -38,7 +38,7 @@ const APP_SHELL = [
   './',
   './index.html',
   './manifest.webmanifest',
-  './config.json',
+  './KioskConfig.json',
   './icons/icon-192.png',
   './icons/icon-512.png',
 ];
@@ -88,7 +88,7 @@ self.addEventListener('fetch', (event) => {
   const isShell =
     req.mode === 'navigate' ||
     path.endsWith('.html') ||
-    path.endsWith('/config.json') ||
+    path.endsWith('/KioskConfig.json') ||
     path.endsWith('/manifest.webmanifest');
 
   const isHeavyAsset =

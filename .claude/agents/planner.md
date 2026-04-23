@@ -16,13 +16,13 @@ Before planning anything, re-read `CLAUDE.md` in the repo root. It is ground tru
 - **Decoders are vendored**, not CDN-fetched: DRACO / KTX2 / Meshopt live under `src/vendor/three/addons/libs/`.
 - **`src/vendor/` is gitignored.** Do not propose committing it. The GitHub Pages workflow repopulates it via `npm run fetch`.
 - **No `localStorage`.** Use `sessionStorage` for user state — kiosk-ish product, we want it to reset across browser restarts.
-- **Rotation in `config.json` is degrees**, not radians. `applyPlacement()` converts internally.
+- **Rotation in `KioskConfig.json` is degrees**, not radians. `applyPlacement()` converts internally.
 - **Service worker `VERSION` bumps when cache shape changes.** Byte-compare triggers `skipWaiting()` → `controllerchange` → in-app update toast. Forget this and users are stuck on the old version forever.
 
 ## Architecture you must respect
 
 - **`headSource` interface** — webcam / device tilt / pointer / mouse all implement `.tick()` / `.calibrate()` / `.dispose()`. New input modes conform to this shape; the render loop does not change.
-- **Scene dispatcher** lives around `src/index.html:246`. `scene.type` branches into `demo` / `image-layers` / `model` / `point-cloud`. Each builder returns `{ tick(dt), onResize() }`. New scene types add a branch, implement a builder with that interface, update `_examples` in `config.json`.
+- **Scene dispatcher** lives around `src/index.html:246`. `scene.type` branches into `demo` / `image-layers` / `model` / `point-cloud`. Each builder returns `{ tick(dt), onResize() }`. New scene types add a branch, implement a builder with that interface, update `_examples` in `KioskConfig.json`.
 - **Shared placement helpers** around `src/index.html:1090-1151`: `applyPlacement()`, `applyAutoFit()`, `defaultStudioLights()`, `extOf()`. Use them from any new scene builder — don't reinvent fit/position math.
 - **Parallax strength is shared across scene types.** Same slider, same mapping. Don't add per-type parallax knobs.
 - **Fullscreen has three surfaces, one toggle.** `#fs-btn`, hamburger entry, F key all call `toggleFullscreen()`. Icon/label/body-class sync via the `fullscreenchange` event — never set them imperatively from handlers. New surface → wire into `toggleFullscreen()`.
