@@ -25,7 +25,9 @@
     "            e.g. { x: 0.05 } nudges the layer 5% of viewport width to the right.",
     "",
     "── model / point-cloud shared fields ───────────────────────────────────",
-    "  src       relative path to the asset file.",
+    "  src       relative path to the asset file. For point-cloud only, may",
+    "            be an array of paths — the active variant switches based on",
+    "            head.x (or pointer.x) left→right, split into equal bins.",
     "  fit       'auto' (default) → center + rescale so longest bbox axis == fitSize.",
     "            'none'           → keep raw file coords (use for scene-scaled models).",
     "  fitSize   target size for the longest bounding-box axis when fit='auto' (default 2.0).",
@@ -45,7 +47,11 @@
   "scene": {
     "type": "point-cloud",
     "background": "#05070c",
-    "src": "assets/0.ply",
+    "src": [
+      "assets/0.ply",
+      "assets/2.ply",
+      "assets/3.ply"
+    ],
     "fit": "auto",
     "fitSize": 7.0,
     "position": { "x": 0, "y": 0, "z": -1.2 },

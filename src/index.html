@@ -1586,44 +1586,125 @@
   }
 
   // ─── Point-cloud scene — .ply / .pcd / .xyz ──────────────────────────────
-  //      Renders a single `THREE.Points` cloud. `pointSize` is in world units
+  //      Renders `THREE.Points` cloud(s). `pointSize` is in world units
   //      (PointsMaterial `sizeAttenuation` is on, so size shrinks with depth).
+  //
+  //      `sceneCfg.src` may be a single string or an array. With an array of
+  //      N entries, head.x (or pointer) horizontally splits into N equal bins
+  //      left→right: `srcs[0]` is active for the leftmost 1/N of the range,
+  //      `srcs[N-1]` for the rightmost. Every variant is pre-loaded so the
+  //      swap is instant; only one is `.visible` at a time. A small
+  //      hysteresis deadband on the bin boundaries prevents flicker when the
+  //      viewer sits right on an edge.
   async function buildPointCloudScene(scene, camera, sceneCfg) {
-    const src = new URL(sceneCfg.src, document.baseURI).href;
-    const ext = extOf(src);
+    const srcList = Array.isArray(sceneCfg.src) ? sceneCfg.src : [sceneCfg.src];
+    if (srcList.length === 0) throw new Error('point-cloud: empty src list');
 
-    let geom;
-    if (ext === 'ply') {
-      const { PLYLoader } = await import('three/addons/loaders/PLYLoader.js');
-      geom = await new PLYLoader().loadAsync(src);
-    } else if (ext === 'pcd') {
-      const { PCDLoader } = await import('three/addons/loaders/PCDLoader.js');
-      const pcd = await new PCDLoader().loadAsync(src);
-      // PCDLoader returns a Points directly — peel the geometry off so we
-      // can re-skin it with our configured material.
-      geom = pcd.geometry;
-    } else if (ext === 'xyz') {
-      const { XYZLoader } = await import('three/addons/loaders/XYZLoader.js');
-      geom = await new XYZLoader().loadAsync(src);
-    } else {
+    async function loadGeom(srcRel) {
+      const src = new URL(srcRel, document.baseURI).href;
+      const ext = extOf(src);
+      if (ext === 'ply') {
+        const { PLYLoader } = await import('three/addons/loaders/PLYLoader.js');
+        return await new PLYLoader().loadAsync(src);
+      } else if (ext === 'pcd') {
+        const { PCDLoader } = await import('three/addons/loaders/PCDLoader.js');
+        const pcd = await new PCDLoader().loadAsync(src);
+        // PCDLoader returns a Points directly — peel the geometry off so we
+        // can re-skin it with our configured material.
+        return pcd.geometry;
+      } else if (ext === 'xyz') {
+        const { XYZLoader } = await import('three/addons/loaders/XYZLoader.js');
+        return await new XYZLoader().loadAsync(src);
+      }
       throw new Error(`unsupported point-cloud extension: .${ext}`);
     }
 
-    const hasColor       = !!geom.getAttribute('color');
-    const useVertexColor = hasColor && (sceneCfg.useVertexColors ?? true);
-    const mat = new THREE.PointsMaterial({
-      size: Number.isFinite(sceneCfg.pointSize) ? sceneCfg.pointSize : 0.008,
-      sizeAttenuation: true,
-      vertexColors: useVertexColor,
-      color: useVertexColor ? 0xffffff : new THREE.Color(sceneCfg.pointColor ?? '#ffffff')
+    // Load every variant in parallel; first byte-in to first byte-out.
+    const geoms = await Promise.all(srcList.map(loadGeom));
+
+    const variants = geoms.map((geom, k) => {
+      const hasColor       = !!geom.getAttribute('color');
+      const useVertexColor = hasColor && (sceneCfg.useVertexColors ?? true);
+      // transparent + depthWrite:false so variants can crossfade without
+      // punching holes in the depth buffer. Points don't self-occlude
+      // cleanly anyway — PointsMaterial draws each vertex as a screen-space
+      // sprite — so losing depth writes costs us nothing here.
+      const mat = new THREE.PointsMaterial({
+        size: Number.isFinite(sceneCfg.pointSize) ? sceneCfg.pointSize : 0.008,
+        sizeAttenuation: true,
+        vertexColors: useVertexColor,
+        color: useVertexColor ? 0xffffff : new THREE.Color(sceneCfg.pointColor ?? '#ffffff'),
+        transparent: true,
+        opacity: k === 0 ? 1 : 0,
+        depthWrite: false,
+      });
+      const points = new THREE.Points(geom, mat);
+      scene.add(points);
+      applyPlacement(points, sceneCfg);
+      points.visible = (k === 0);
+      return points;
     });
 
-    const points = new THREE.Points(geom, mat);
-    scene.add(points);
-    applyPlacement(points, sceneCfg);
-    sceneBounds = computeSceneBounds(points);
+    // All variants are (expected to be) the same scan from different views,
+    // so the first one's bbox is a fair stand-in for the edge-clamp. If
+    // variants diverge wildly, you'd want per-variant bounds — not built yet.
+    sceneBounds = computeSceneBounds(variants[0]);
 
-    return { tick: () => {}, onResize: () => {} };
+    const N = variants.length;
+
+    // Time-driven crossfade: when the viewer's bin changes, we COMMIT to a
+    // transition from the currently-active variant to the new target and
+    // let it run to completion regardless of what the viewer does in the
+    // meantime. Avoids a "stuck at 50/50" look when the viewer dwells on a
+    // bin boundary. Trade-off: fast whiplash head movements chain into
+    // sequential transitions rather than continuous feedback — felt fine
+    // in testing, ping if not.
+    const TRANSITION_DURATION_S = 0.4;
+    // Hysteresis on boundary detection — small, just enough to kill
+    // single-frame jitter; the commit-and-complete transition does most
+    // of the stability lifting.
+    const HYSTERESIS = 0.02;
+
+    let activeIndex = 0;
+    let targetIndex = 0;
+    let transitionT = 1;  // 1 = settled (no transition in progress)
+
+    return {
+      tick: (dt) => {
+        if (N === 1) return;
+
+        // If a transition is running, advance it and return. We deliberately
+        // ignore head movement while transitioning — the user asked for
+        // "whichever ply we're transitioning to should complete".
+        if (transitionT < 1) {
+          transitionT = Math.min(1, transitionT + dt / TRANSITION_DURATION_S);
+          const oldOp = 1 - transitionT;
+          const newOp = transitionT;
+          variants[activeIndex].material.opacity = oldOp;
+          variants[activeIndex].visible = oldOp > 0.001;
+          variants[targetIndex].material.opacity = newOp;
+          variants[targetIndex].visible = true;
+          if (transitionT >= 1) activeIndex = targetIndex;
+          return;
+        }
+
+        // Settled. Check if the viewer has moved into a new bin and start a
+        // fresh transition if so.
+        const head = headSource.getHead?.();
+        if (!head) return;
+        const norm = Math.max(0, Math.min(1, (head.x + 1) / 2));
+        const bin = Math.max(0, Math.min(N - 1, Math.floor(norm * N)));
+        if (bin === activeIndex) return;
+        const boundary = bin > activeIndex
+          ? (activeIndex + 1) / N
+          : activeIndex / N;
+        if (Math.abs(norm - boundary) <= HYSTERESIS) return;
+
+        targetIndex = bin;
+        transitionT = 0;
+      },
+      onResize: () => {},
+    };
   }
 
   // ─── Shared placement helpers (model + point-cloud) ──────────────────────
