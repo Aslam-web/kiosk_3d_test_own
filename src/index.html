@@ -5,9 +5,17 @@
 <title>FishtankVR</title>
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no" />
 <meta name="theme-color" content="#0a0b10" />
-<!-- iOS web-app niceties (if added to home screen) -->
+<!-- PWA manifest — icons, start_url, display mode (standalone), landscape orient.
+     Installed instances get updates via sw.js + the in-app update banner. -->
+<link rel="manifest" href="manifest.webmanifest" />
+<!-- iOS web-app niceties. Apple still ignores manifest entries for most of
+     these even on iOS 26, so the legacy meta tags are required. -->
+<meta name="mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="FishtankVR" />
+<link rel="apple-touch-icon" href="icons/icon-180.png" />
+<link rel="icon" type="image/png" sizes="64x64" href="icons/favicon-64.png" />
 <style>
   :root { color-scheme: dark;
           --safe-t: env(safe-area-inset-top, 0px);
@@ -32,19 +40,29 @@
          line-height: 1.4; pointer-events: none; white-space: pre; max-width: calc(100vw - 24px); }
   .hud.hidden { display: none; }   /* toggled from the menu */
   #hud-top    { top:    calc(12px + var(--safe-t)); left:  calc(12px + var(--safe-l)); }
-  #hud-head   { bottom: calc(12px + var(--safe-b)); left:  calc(12px + var(--safe-l)); }
+  /* hud-head sits above the fullscreen button so the two don't overlap when
+     the debug HUD is toggled on. (fs-btn is 52px + 12px bottom margin.) */
+  #hud-head   { bottom: calc(76px + var(--safe-b)); left:  calc(12px + var(--safe-l)); }
 
-  /* Webcam self-view — mirrored, bottom-right corner */
+  /* Invisible pool for animated-image (GIF) and video source elements.
+     We drop <img> / <video> into here so the browser decodes their frames
+     natively, then read from them into a CanvasTexture / VideoTexture each
+     frame. Kept at zero size + opacity 0 so it never affects layout. */
+  #media-pool { position: fixed; top: 0; left: 0;
+                width: 0; height: 0; pointer-events: none;
+                opacity: 0; overflow: hidden; z-index: -1; }
+
+  /* Webcam self-view — mirrored, top-right corner on all devices */
   #selfview { position: fixed;
               right:  calc(12px + var(--safe-r));
-              bottom: calc(12px + var(--safe-b));
+              top:    calc(12px + var(--safe-t));
               width: 200px; height: 150px;
               border-radius: 10px; border: 1px solid rgba(255,255,255,0.1);
               background: #000; transform: scaleX(-1); object-fit: cover; z-index: 5;
               box-shadow: 0 8px 24px rgba(0,0,0,0.4); pointer-events: none; }
   #selfview.hidden { display: none; }
 
-  /* Floating menu button — mobile's equivalent of the keyboard shortcuts */
+  /* Floating menu button — visible on all devices */
   #menu-btn { position: fixed;
               right:  calc(12px + var(--safe-r));
               bottom: calc(12px + var(--safe-b));
@@ -52,9 +70,171 @@
               width: 52px; height: 52px; border-radius: 50%;
               background: rgba(16,18,24,0.88); color: #e8edf5;
               border: 1px solid rgba(255,255,255,0.14);
-              font-size: 22px; line-height: 1; display: none;
+              font-size: 22px; line-height: 1;
+              display: inline-flex; align-items: center; justify-content: center;
               box-shadow: 0 8px 24px rgba(0,0,0,0.4); cursor: pointer; }
-  #menu-btn.shown { display: inline-flex; align-items: center; justify-content: center; }
+
+  /* Floating fullscreen toggle — always visible, bottom-left corner so it
+     doesn't collide with the hamburger (bottom-right) or the mobile self-
+     view (top-right on touch). Icons swap between enter/exit states via
+     `body.is-fullscreen`. */
+  #fs-btn  { position: fixed;
+             left:   calc(12px + var(--safe-l));
+             bottom: calc(12px + var(--safe-b));
+             z-index: 20;
+             width: 52px; height: 52px; border-radius: 50%;
+             background: rgba(16,18,24,0.88); color: #e8edf5;
+             border: 1px solid rgba(255,255,255,0.14);
+             line-height: 1; display: inline-flex; align-items: center; justify-content: center;
+             box-shadow: 0 8px 24px rgba(0,0,0,0.4); cursor: pointer;
+             padding: 0; }
+  #fs-btn svg { width: 22px; height: 22px; display: block; }
+  #fs-btn .icon-exit,
+  body.is-fullscreen #fs-btn .icon-enter { display: none; }
+  body.is-fullscreen #fs-btn .icon-exit { display: block; }
+  /* Hide the fullscreen button entirely on platforms that don't expose
+     the Fullscreen API (rare — mostly legacy iOS Safari). Toggled from JS. */
+  #fs-btn.unavailable { display: none; }
+
+  /* Discoverability hint for touch users — a small "Fullscreen" label that
+     bounces next to the button, plus an outward pulse ring on the button
+     itself. Shown only on coarse-pointer devices, and only until the user
+     has either tapped the button or actually entered fullscreen. The JS
+     adds `fs-hint-dismissed` on click / fullscreenchange / API-unavailable. */
+  #fs-hint { position: fixed;
+             left:   calc(72px + var(--safe-l));
+             bottom: calc(25px + var(--safe-b));
+             z-index: 20;
+             padding: 6px 10px; border-radius: 14px;
+             background: rgba(16,18,24,0.92); color: #e8edf5;
+             border: 1px solid rgba(255,255,255,0.14);
+             font: 600 12px/1 ui-sans-serif, system-ui, sans-serif;
+             letter-spacing: 0.02em; white-space: nowrap;
+             pointer-events: none; display: none;
+             animation: fsHintBounce 1.6s ease-in-out infinite; }
+  #fs-hint::before {
+    content: ''; position: absolute; left: -5px; top: 50%;
+    transform: translateY(-50%);
+    width: 0; height: 0;
+    border: 5px solid transparent;
+    border-right-color: rgba(16,18,24,0.92);
+  }
+  @keyframes fsHintBounce {
+    0%, 100% { opacity: 0.6; transform: translateX(0); }
+    50%      { opacity: 1;   transform: translateX(4px); }
+  }
+  /* Expanding-ring pulse emanating from the fullscreen button. */
+  #fs-btn::after {
+    content: ''; position: absolute; inset: -4px;
+    border-radius: 50%;
+    border: 2px solid rgba(118, 166, 255, 0.55);
+    pointer-events: none; display: none;
+    animation: fsBtnRing 1.6s ease-out infinite;
+  }
+  @keyframes fsBtnRing {
+    0%   { transform: scale(1);    opacity: 0.85; }
+    100% { transform: scale(1.55); opacity: 0;    }
+  }
+  /* Reveal the pulsing hint on all devices until dismissed. */
+  body:not(.is-fullscreen):not(.fs-hint-dismissed) #fs-hint,
+  body:not(.is-fullscreen):not(.fs-hint-dismissed) #fs-btn::after {
+    display: block;
+  }
+
+  /* iOS standalone — hide the fullscreen button entirely. The Fullscreen API
+     doesn't work on iPhone PWA, and landscape guidance is delivered passively
+     via the orientation toast (see #orientation-toast below). */
+  body.ios-standalone #fs-btn { display: none; }
+  /* If the user prefers reduced motion, stop pulsing but leave the label
+     visible so the discoverability goal still works. */
+  @media (prefers-reduced-motion: reduce) {
+    #fs-hint, #fs-btn::after { animation: none; }
+  }
+
+  /* ─── iOS "Add to Home Screen" install banner ─────────────────────────
+     Shown only on iOS Safari (including iOS Chrome, which is WebKit under
+     the hood) when the page is NOT already running in standalone mode.
+     Positioned just above the iOS bottom toolbar so the share-button
+     arrow has somewhere to point. Hidden on every other platform. */
+  #ios-install { position: fixed;
+                 left:   calc(12px + var(--safe-l));
+                 right:  calc(12px + var(--safe-r));
+                 bottom: calc(80px + var(--safe-b));
+                 z-index: 30;
+                 padding: 12px 14px;
+                 border-radius: 14px;
+                 background: rgba(16,18,24,0.94); color: #e8edf5;
+                 border: 1px solid rgba(118,166,255,0.35);
+                 box-shadow: 0 8px 28px rgba(0,0,0,0.5);
+                 font: 500 13px/1.35 ui-sans-serif, system-ui, sans-serif;
+                 display: none;                /* JS flips this on */
+                 align-items: center; gap: 10px; }
+  #ios-install.shown { display: flex; }
+  #ios-install .ios-install-text { flex: 1; min-width: 0; }
+  #ios-install .ios-install-text strong { color: #9ec1ff; font-weight: 600; }
+  #ios-install .ios-install-icon {
+    /* iOS share-sheet glyph rendered in SVG so it matches the system style
+       regardless of font availability. */
+    width: 20px; height: 22px; flex: 0 0 auto; display: inline-block;
+    vertical-align: -5px;
+  }
+  #ios-install button.ios-install-close {
+    flex: 0 0 auto; background: transparent; color: inherit;
+    border: 1px solid rgba(255,255,255,0.18); border-radius: 8px;
+    width: 28px; height: 28px; padding: 0; font-size: 16px; line-height: 1;
+    cursor: pointer;
+  }
+  #ios-install::after {
+    /* Little tail pointing down at the Safari toolbar's share button. */
+    content: ''; position: absolute; left: 30%; bottom: -8px;
+    width: 0; height: 0;
+    border: 8px solid transparent;
+    border-top-color: rgba(16,18,24,0.94);
+  }
+
+  /* ─── Update banner (shown when SW detects a newer version) ───────────
+     Appears at the top so it doesn't fight the fs-hint / install banner
+     at the bottom. Non-dismissable until the user reloads — by design,
+     because the whole point is to get them onto the new version. */
+  #update-banner { position: fixed;
+                   top:  calc(12px + var(--safe-t));
+                   left:  50%;
+                   transform: translateX(-50%);
+                   z-index: 40;
+                   padding: 10px 14px;
+                   border-radius: 999px;
+                   background: rgba(82,115,178,0.94); color: #fff;
+                   border: 1px solid rgba(255,255,255,0.18);
+                   box-shadow: 0 8px 24px rgba(0,0,0,0.45);
+                   font: 600 12px/1 ui-sans-serif, system-ui, sans-serif;
+                   display: none;
+                   align-items: center; gap: 10px; }
+  #update-banner.shown { display: inline-flex; }
+  #update-banner button {
+    background: #fff; color: #1f2a44; border: none; border-radius: 999px;
+    padding: 6px 12px; font-weight: 700; cursor: pointer;
+  }
+
+  /* Orientation hint toast — warm, non-blocking pill that surfaces when the
+     device is portrait and we'd prefer landscape. Auto-dismisses after a few
+     seconds (see TOAST_DURATION_MS in JS). Replaces the old full-screen
+     overlay, which didn't play nicely with iOS standalone rotation transitions. */
+  #orientation-toast { position: fixed;
+                       top:    calc(12px + var(--safe-t));
+                       left:   50%;
+                       transform: translate(-50%, -20px);
+                       z-index: 40;
+                       padding: 10px 16px;
+                       border-radius: 999px;
+                       background: rgba(42,30,16,0.94); color: #ffe9c7;
+                       border: 1px solid rgba(245,184,112,0.55);
+                       box-shadow: 0 8px 24px rgba(0,0,0,0.45);
+                       font: 500 13px/1.2 ui-sans-serif, system-ui, sans-serif;
+                       max-width: calc(100vw - 32px);
+                       text-align: center;
+                       opacity: 0; pointer-events: none;
+                       transition: opacity 260ms ease, transform 260ms ease; }
+  #orientation-toast.shown { opacity: 1; transform: translate(-50%, 0); }
 
   /* Touch devices (phones + tablets) — selfview moves to the top-right so
      it doesn't overlap the hamburger, and everything shrinks. We key on
@@ -62,25 +242,37 @@
      (which is often >720px wide) still counts as mobile. */
   @media (pointer: coarse), (max-width: 720px) {
     .hud { font-size: 11px; padding: 6px 9px; }
-    #selfview { width: 96px; height: 72px;
-                top:   calc(12px + var(--safe-t)); bottom: auto;
-                right: calc(12px + var(--safe-r)); }
-    #menu-btn { display: inline-flex; align-items: center; justify-content: center; }
+    #selfview { width: 96px; height: 72px; }
+  }
+
+  /* Desktop — larger buttons and hint since there's more screen real estate. */
+  @media (pointer: fine) and (min-width: 721px) {
+    #menu-btn { width: 64px; height: 64px; font-size: 28px; }
+    #fs-btn   { width: 64px; height: 64px; }
+    #fs-btn svg { width: 28px; height: 28px; }
+    #fs-hint  { font-size: 14px; padding: 8px 14px;
+                left: calc(84px + var(--safe-l));
+                bottom: calc(28px + var(--safe-b)); }
+    #selfview { width: 240px; height: 180px; }
   }
 
   #menu { position: fixed; z-index: 21;
           right:  calc(12px + var(--safe-r));
           bottom: calc(76px + var(--safe-b));
           width: 220px; padding: 10px; display: none;
+          max-height: calc(100dvh - 100px); overflow-y: auto;
           background: rgba(16,18,24,0.94); backdrop-filter: blur(8px);
           border: 1px solid rgba(255,255,255,0.12); border-radius: 12px;
           box-shadow: 0 12px 32px rgba(0,0,0,0.5); }
   #menu.shown { display: block; }
-  #menu button { display: block; width: 100%; text-align: left;
+  #menu button { display: flex; align-items: center; width: 100%;
                  background: transparent; color: inherit; border: 0;
                  padding: 11px 12px; border-radius: 8px; font-size: 14px; cursor: pointer; }
   #menu button + button { margin-top: 2px; }
   #menu button:hover, #menu button:active { background: rgba(255,255,255,0.08); }
+  /* Tick indicator — appears right-aligned when data-checked attribute is present. */
+  #menu button[data-checked]::after { content: '✓'; margin-left: auto; padding-left: 12px;
+                                      color: #9ec1ff; font-size: 13px; font-weight: 700; }
   #menu hr { border: 0; border-top: 1px solid rgba(255,255,255,0.08); margin: 8px 4px; }
 
   /* Boot overlay — shown until tracking starts or the user picks a fallback */
@@ -121,15 +313,68 @@
 
   <video id="selfview" autoplay playsinline muted class="hidden"></video>
 
+  <!-- Host for <img>/<video> elements used by image-layers scenes. -->
+  <div id="media-pool" aria-hidden="true"></div>
+
+  <button id="fs-btn" aria-label="Enter fullscreen" title="Fullscreen (F)">
+    <!-- Enter: four corner brackets pointing outward. -->
+    <svg class="icon-enter" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+         stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/>
+    </svg>
+    <!-- Exit: four corner brackets pointing inward. -->
+    <svg class="icon-exit" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+         stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5"/>
+    </svg>
+  </button>
+
+  <!-- Pulsing "Fullscreen" label to flag the button for first-time touch
+       users. Visibility is gated by `body.fs-hint-dismissed` + media query;
+       see the CSS block up top. -->
+  <span id="fs-hint" aria-hidden="true">Fullscreen</span>
+
+  <!-- iOS-only "Add to Home Screen" prompt. On iPhone Safari the Fullscreen
+       API isn't available at the element level, so the only path to true
+       fullscreen + landscape-lock is installing as a PWA. Revealed by JS
+       when we detect iOS + not-already-standalone. -->
+  <div id="ios-install" role="dialog" aria-label="Install for fullscreen">
+    <span class="ios-install-text">
+      For fullscreen on iPhone: tap
+      <svg class="ios-install-icon" viewBox="0 0 20 22" fill="none"
+           stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
+           stroke-linejoin="round" aria-hidden="true">
+        <path d="M10 2v13M6 6l4-4 4 4"/>
+        <path d="M4 10v9a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1v-9"/>
+      </svg>
+      Share, then <strong>Add to Home Screen</strong>.
+    </span>
+    <button type="button" class="ios-install-close" aria-label="Dismiss">×</button>
+  </div>
+
+  <!-- Update-available toast. Rendered by JS when a new service worker is
+       waiting; clicking Reload skipWaiting's the new SW and refreshes. -->
+  <div id="update-banner" role="status" aria-live="polite">
+    <span>New version available</span>
+    <button type="button" id="update-reload">Reload</button>
+  </div>
+
+  <!-- Orientation hint toast — warm, non-blocking pill. Surfaces when the
+       device is portrait and we'd prefer landscape (iOS standalone, or any
+       platform in fullscreen). Auto-dismisses; see JS for duration. -->
+  <div id="orientation-toast" role="status" aria-live="polite">
+    💡 Rotate to landscape for the best view
+  </div>
+
   <button id="menu-btn" aria-label="Menu">☰</button>
   <div id="menu" role="menu">
     <button id="menu-calibrate">Recentre origin</button>
-    <button id="menu-toggle-self">Hide / show self-view</button>
-    <button id="menu-toggle-hud">Show position HUD</button>
     <button id="menu-pointer">Use pointer / touch</button>
     <button id="menu-tilt">Use device tilt</button>
     <button id="menu-camera">Use camera</button>
     <hr />
+    <button id="menu-toggle-hud">Toggle HUD</button>
+    <button id="menu-toggle-self">Toggle Self-View</button>
     <button id="menu-fullscreen">Toggle fullscreen</button>
   </div>
 
@@ -204,109 +449,53 @@
   key.position.set(3, 4, 5);
   scene.add(key);
 
-  // Wide wireframe "back wall" — sized generously so extreme parallax
-  // never reveals the void past its edges.
-  const wall = new THREE.Mesh(
-    new THREE.PlaneGeometry(16, 10, 28, 16),
-    new THREE.MeshStandardMaterial({ color: '#1b2030', wireframe: true })
-  );
-  wall.position.set(0, 0, -3.5);
-  scene.add(wall);
+  // ────────────────────────────────────────────────────────────────────────────
+  //  Parallax — strength knobs are declared here (not below) so `config.json`
+  //  can override them before the render loop starts reading from them.
+  // ────────────────────────────────────────────────────────────────────────────
+  const PARALLAX = { x: 0.8, y: 0.5, z: 0.3 };
 
-  const props = new THREE.Group();
-  scene.add(props);
+  // ────────────────────────────────────────────────────────────────────────────
+  //  Scene dispatcher. `sceneHooks.tick(dt)` runs each frame;
+  //  `sceneHooks.onResize()` runs whenever the canvas dims change.
+  //  Populated asynchronously from config.json — the render loop starts
+  //  immediately and shows just the background colour until the scene is ready.
+  // ────────────────────────────────────────────────────────────────────────────
+  let sceneHooks = { tick: () => {}, onResize: () => {} };
 
-  // Richer palette + geometry pool → scene reads as "volumetric room",
-  // not "field of identical cubes". Each factory returns a fresh geometry
-  // so the meshes don't share rotation.
-  const palette = [
-    '#ff6b6b','#ffd166','#6bcb77','#4d96ff','#c780fa','#ffb7b2','#a0e7e5',
-    '#f9a03f','#82c0cc','#eddea4','#e07a5f','#81b29a','#f2cc8f','#3d405b',
-    '#ef476f','#06d6a0','#118ab2','#ffd6a5'
-  ];
-  const geomPool = [
-    () => new THREE.BoxGeometry(0.3, 0.3, 0.3),
-    () => new THREE.SphereGeometry(0.2, 24, 16),
-    () => new THREE.ConeGeometry(0.22, 0.5, 18),
-    () => new THREE.CylinderGeometry(0.16, 0.16, 0.45, 24),
-    () => new THREE.DodecahedronGeometry(0.24),
-    () => new THREE.IcosahedronGeometry(0.26, 0),
-    () => new THREE.OctahedronGeometry(0.24),
-    () => new THREE.TorusGeometry(0.2, 0.07, 14, 30),
-    () => new THREE.TetrahedronGeometry(0.3),
-  ];
-
-  const pick = arr => arr[Math.floor(Math.random() * arr.length)];
-
-  // 90 small-to-medium objects spread across a wide volume. Bias Z toward
-  // the back so the scene has depth; let a handful poke in FRONT of the
-  // window plane for that "coming at you" feel.
-  for (let i = 0; i < 90; i++) {
-    const g = pick(geomPool)();
-    const scale = 0.55 + Math.random() * 1.7;
-    const m = new THREE.Mesh(
-      g,
-      new THREE.MeshStandardMaterial({
-        color: pick(palette),
-        roughness: 0.25 + Math.random() * 0.6,
-        metalness: Math.random() * 0.45
-      })
-    );
-    // x: -6..6  (wider than viewport so parallax finds objects at edges)
-    // y: -4..4  (same logic vertically)
-    // z: -3.2..1.2  (most deep, a few in front of the origin)
-    m.position.set(
-      (Math.random() - 0.5) * 12,
-      (Math.random() - 0.5) * 8,
-      -3.2 + Math.random() * 4.4
-    );
-    m.rotation.set(
-      Math.random() * Math.PI * 2,
-      Math.random() * Math.PI * 2,
-      Math.random() * Math.PI * 2
-    );
-    m.scale.setScalar(scale);
-    props.add(m);
-  }
-
-  // Hero objects — big enough to anchor the composition at each corner of
-  // the scene volume, so the eye has something to track as the camera moves.
-  const knot = new THREE.Mesh(
-    new THREE.TorusKnotGeometry(0.45, 0.14, 180, 22),
-    new THREE.MeshStandardMaterial({ color: '#4bc0d9', roughness: 0.2, metalness: 0.5 })
-  );
-  knot.position.set(0, 0, 0.2);
-  props.add(knot);
-
-  const bigBall = new THREE.Mesh(
-    new THREE.SphereGeometry(0.9, 48, 32),
-    new THREE.MeshStandardMaterial({ color: '#f2a65a', roughness: 0.4 })
-  );
-  bigBall.position.set(-3.4, 0.6, -2.3);
-  props.add(bigBall);
-
-  const bigDodec = new THREE.Mesh(
-    new THREE.DodecahedronGeometry(0.85),
-    new THREE.MeshStandardMaterial({ color: '#c780fa', roughness: 0.35, metalness: 0.25 })
-  );
-  bigDodec.position.set(3.0, -0.8, -2.5);
-  props.add(bigDodec);
-
-  const bigTorus = new THREE.Mesh(
-    new THREE.TorusGeometry(0.7, 0.18, 24, 64),
-    new THREE.MeshStandardMaterial({ color: '#ffd166', roughness: 0.3, metalness: 0.3 })
-  );
-  bigTorus.position.set(2.2, 2.1, -2.8);
-  bigTorus.rotation.set(0.6, 0.4, 0);
-  props.add(bigTorus);
-
-  const bigCone = new THREE.Mesh(
-    new THREE.ConeGeometry(0.7, 1.4, 36),
-    new THREE.MeshStandardMaterial({ color: '#81b29a', roughness: 0.4 })
-  );
-  bigCone.position.set(-2.6, -1.8, -2.6);
-  bigCone.rotation.z = -0.3;
-  props.add(bigCone);
+  (async function buildSceneFromConfig() {
+    let cfg = null;
+    try {
+      const res = await fetch('./config.json', { cache: 'no-cache' });
+      if (res.ok) cfg = await res.json();
+    } catch (err) {
+      console.warn('[config] could not fetch config.json:', err);
+    }
+    if (cfg?.scene?.background) {
+      scene.background = new THREE.Color(cfg.scene.background);
+    }
+    if (cfg?.parallax?.strength) {
+      Object.assign(PARALLAX, cfg.parallax.strength);
+    }
+    const type = cfg?.scene?.type ?? 'demo';
+    try {
+      if (type === 'image-layers') {
+        sceneHooks = await buildImageLayerScene(scene, camera, cfg.scene);
+      } else if (type === 'model') {
+        sceneHooks = await buildModelScene(scene, camera, cfg.scene);
+      } else if (type === 'point-cloud') {
+        sceneHooks = await buildPointCloudScene(scene, camera, cfg.scene);
+      } else {
+        if (type !== 'demo') console.warn(`[scene] unknown scene.type "${type}" — falling back to demo.`);
+        sceneHooks = buildDemoScene(scene);
+      }
+      sceneHooks.onResize?.();
+    } catch (err) {
+      console.error('[scene] build failed — falling back to demo:', err);
+      sceneHooks = buildDemoScene(scene);
+      sceneHooks.onResize?.();
+    }
+  })();
 
   function onResize() {
     const w = canvas.clientWidth, h = canvas.clientHeight;
@@ -314,6 +503,8 @@
     renderer.setSize(w, h, false);             // false = don't touch the canvas's CSS size
     camera.aspect = w / h;
     camera.updateProjectionMatrix();
+    // Let the active scene re-pin its layers to the new viewport edges.
+    sceneHooks.onResize?.();
   }
 
   // Resize story on mobile is messy:
@@ -401,6 +592,7 @@
       calibrate: () => { mx = 0; my = 0; }
     };
     selfview.classList.add('hidden');
+    document.getElementById('menu-toggle-self')?.removeAttribute('data-checked');
   }
 
   // ─── Device-orientation (tilt) fallback ───────────────────────────────────
@@ -459,6 +651,7 @@
     });
 
     selfview.classList.add('hidden');
+    document.getElementById('menu-toggle-self')?.removeAttribute('data-checked');
 
     // Map ±25° of tilt to ±1 of normalised head coord. Feels right for phones.
     const TILT_RANGE = 25;
@@ -522,6 +715,7 @@
 
     selfview.srcObject = stream;
     selfview.classList.remove('hidden');
+    document.getElementById('menu-toggle-self')?.setAttribute('data-checked', '');
     await selfview.play().catch(() => {});
 
     setBootStatus('Loading face landmarker…');
@@ -615,9 +809,8 @@
   }
 
   // ────────────────────────────────────────────────────────────────────────────
-  //  Parallax
+  //  Parallax — `PARALLAX` was declared earlier so config.json can override it.
   // ────────────────────────────────────────────────────────────────────────────
-  const PARALLAX = { x: 0.8, y: 0.5, z: 0.3 };
 
   function updateCamera(head) {
     const px = head.x * PARALLAX.x;
@@ -644,8 +837,7 @@
 
     const head = headSource.getHead();
     updateCamera(head);
-    knot.rotation.x += dt * 0.3;
-    knot.rotation.y += dt * 0.5;
+    sceneHooks.tick?.(dt);
 
     renderer.render(scene, camera);
 
@@ -698,22 +890,270 @@
   });
 
   document.getElementById('menu-calibrate')   .addEventListener('click', () => { headSource.calibrate?.(); menuEl.classList.remove('shown'); });
-  document.getElementById('menu-toggle-self') .addEventListener('click', () => { selfview.classList.toggle('hidden'); menuEl.classList.remove('shown'); });
-  document.getElementById('menu-toggle-hud')  .addEventListener('click', (e) => {
-    // Off by default; this flips it and relabels so the user knows the
-    // current state without a separate indicator.
-    hudHead.classList.toggle('hidden');
-    e.currentTarget.textContent = hudHead.classList.contains('hidden')
-      ? 'Show position HUD'
-      : 'Hide position HUD';
+  document.getElementById('menu-toggle-self') .addEventListener('click', (e) => {
+    selfview.classList.toggle('hidden');
+    const isShown = !selfview.classList.contains('hidden');
+    if (isShown) e.currentTarget.setAttribute('data-checked', '');
+    else e.currentTarget.removeAttribute('data-checked');
+    menuEl.classList.remove('shown');
+  });
+  // HUD toggle — drive both panels from one shared flag so they always match.
+  // Both start hidden; the flag tracks the visible state.
+  let hudVisible = false;
+  hudTop.classList.add('hidden');
+  document.getElementById('menu-toggle-hud').addEventListener('click', (e) => {
+    hudVisible = !hudVisible;
+    hudTop.classList.toggle('hidden', !hudVisible);
+    hudHead.classList.toggle('hidden', !hudVisible);
+    if (hudVisible) e.currentTarget.setAttribute('data-checked', '');
+    else e.currentTarget.removeAttribute('data-checked');
     menuEl.classList.remove('shown');
   });
   document.getElementById('menu-pointer')     .addEventListener('click', () => tryStart(async () => usePointerHead(), 'pointer'));
   document.getElementById('menu-tilt')        .addEventListener('click', () => tryStart(useTiltHead, 'device tilt'));
   document.getElementById('menu-camera')      .addEventListener('click', () => tryStart(useWebcamHead, 'camera'));
-  document.getElementById('menu-fullscreen')  .addEventListener('click', () => {
-    if (!document.fullscreenElement) document.documentElement.requestFullscreen?.();
-    else                              document.exitFullscreen?.();
+  // ────────────────────────────────────────────────────────────────────────────
+  //  Fullscreen — a single toggleFullscreen() bound to three surfaces:
+  //  the floating #fs-btn, the menu entry, and the F shortcut. Icon + label
+  //  stay in sync via the `fullscreenchange` event (also fires when the
+  //  user hits Esc or the browser's built-in UI to exit).
+  // ────────────────────────────────────────────────────────────────────────────
+  const fsBtn = document.getElementById('fs-btn');
+
+  // Probe the element's fullscreen methods directly. `document.fullscreenEnabled`
+  // is unreliable on iOS Safari (undefined on every version we've shipped
+  // against, including 17+), so we check the callable methods on
+  // documentElement instead. `requestFullscreen` covers modern browsers
+  // (desktop, Android, iOS 16.4+); `webkitRequestFullscreen` covers older
+  // WebKit-based browsers that never unprefixed. If neither exists, the
+  // button is genuinely useless — hide it.
+  const rootEl = document.documentElement;
+  const reqFS =
+    rootEl.requestFullscreen ??
+    rootEl.webkitRequestFullscreen ??
+    rootEl.webkitEnterFullscreen;  // iOS <video>-style; we include it for completeness
+  const exitFS =
+    document.exitFullscreen ??
+    document.webkitExitFullscreen ??
+    document.webkitCancelFullScreen;
+  const getFSElement = () =>
+    document.fullscreenElement ?? document.webkitFullscreenElement ?? null;
+
+  if (typeof reqFS !== 'function') {
+    fsBtn.classList.add('unavailable');
+    // No button → no hint. Belt-and-braces alongside the CSS guards.
+    document.body.classList.add('fs-hint-dismissed');
+  }
+
+  // Once the user acknowledges the button (tap or fullscreen entry), stop
+  // pulsing forever for this session — the CSS is keyed on this body class.
+  const dismissFSHint = () => document.body.classList.add('fs-hint-dismissed');
+
+  // ────────────────────────────────────────────────────────────────────────────
+  //  PWA install prompt (iOS-specific)
+  //  On iPhone Safari the Fullscreen API isn't available at the element level,
+  //  so the only realistic path to fullscreen + landscape-lock is running the
+  //  app as a home-screen PWA (standalone display mode). We detect iOS Safari-
+  //  style webkit + not-already-standalone and show a small instructional
+  //  banner. Android / desktop users never see this — they've got working
+  //  fullscreen APIs and don't need the extra guidance.
+  // ────────────────────────────────────────────────────────────────────────────
+  const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent)
+    || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);  // iPadOS 13+ reports as Mac
+  const isStandalone = window.matchMedia('(display-mode: standalone)').matches
+    || window.matchMedia('(display-mode: fullscreen)').matches
+    || window.navigator.standalone === true;  // iOS-only flag
+
+  const iosInstall = document.getElementById('ios-install');
+  const INSTALL_DISMISSED_KEY = 'fishtank_ios_install_dismissed';
+
+  // Show the install banner on iOS Safari when not yet installed, unless the
+  // user explicitly dismissed it this session (remembered via sessionStorage
+  // so they see it fresh after each browser relaunch — useful when updates
+  // ship and the reminder is still relevant).
+  if (isIOS && !isStandalone && typeof reqFS !== 'function') {
+    let dismissed = false;
+    try { dismissed = sessionStorage.getItem(INSTALL_DISMISSED_KEY) === '1'; }
+    catch { /* private-mode Safari throws on sessionStorage — ignore */ }
+    if (!dismissed) {
+      // Short delay so it doesn't fight the app's first-frame composite.
+      setTimeout(() => iosInstall.classList.add('shown'), 900);
+      // Also suppress the generic fs-btn pulse hint, since we're giving
+      // them a more specific instruction.
+      document.body.classList.add('fs-hint-dismissed');
+    }
+  }
+  iosInstall.querySelector('.ios-install-close').addEventListener('click', () => {
+    iosInstall.classList.remove('shown');
+    try { sessionStorage.setItem(INSTALL_DISMISSED_KEY, '1'); } catch {}
+  });
+
+  // On iOS browser (non-standalone), repurpose #fs-btn as an ℹ️ toggle for the
+  // install banner so the user can re-open it after dismissing the [×] button.
+  if (isIOS && !isStandalone) {
+    fsBtn.innerHTML = '<span aria-hidden="true" style="font-size:22px;line-height:1">ℹ️</span>';
+    fsBtn.title = 'Install guide';
+    fsBtn.setAttribute('aria-label', 'Toggle install guide');
+    fsBtn.classList.remove('unavailable');
+  }
+
+  // On iOS standalone (PWA from home screen), the Fullscreen API is moot and
+  // the fs-btn has no purpose — it's hidden via CSS. Landscape guidance is
+  // delivered passively through the orientation toast (see below).
+  if (isIOS && isStandalone) {
+    document.body.classList.add('ios-standalone');
+    // Suppress the generic fullscreen pulse hint too — it's not applicable here.
+    document.body.classList.add('fs-hint-dismissed');
+  }
+
+  // ────────────────────────────────────────────────────────────────────────────
+  //  Service worker — offline caching + update notifications
+  //  Registered unconditionally; the SW self-guards against unsupported
+  //  browsers. Update flow: when the SW detects a new version, it installs,
+  //  calls skipWaiting, fires `controllerchange`, and we surface a small
+  //  "New version available — Reload" toast rather than yanking the user
+  //  mid-interaction.
+  // ────────────────────────────────────────────────────────────────────────────
+  if ('serviceWorker' in navigator) {
+    // Defer until after first paint so we don't steal bandwidth from the
+    // three.js / mediapipe fetches the user actually cares about.
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('sw.js').then((reg) => {
+        // Watch for updates: either the SW is already waiting (user came
+        // back after a deploy), or one installs while the page is open.
+        const showUpdateBanner = () => {
+          const banner = document.getElementById('update-banner');
+          banner.classList.add('shown');
+        };
+        if (reg.waiting) showUpdateBanner();
+        reg.addEventListener('updatefound', () => {
+          const nw = reg.installing;
+          if (!nw) return;
+          nw.addEventListener('statechange', () => {
+            // `installed` + existing controller ⇒ a fresh version is ready
+            // to take over (we just haven't reloaded yet). First-install
+            // also transitions to `installed`, but without a controller,
+            // and that case doesn't warrant a banner.
+            if (nw.state === 'installed' && navigator.serviceWorker.controller) {
+              showUpdateBanner();
+            }
+          });
+        });
+        // Periodic update check — GitHub Pages CDN can take a minute to
+        // flush, so we nudge every 30 min while the app is open.
+        setInterval(() => reg.update().catch(() => {}), 30 * 60 * 1000);
+      }).catch((err) => console.warn('[sw] register failed:', err));
+
+      // Reload as soon as a new SW takes control — but only after the
+      // user confirms via the banner (we set a flag just before reloading
+      // to avoid double-refresh loops).
+      let reloading = false;
+      navigator.serviceWorker.addEventListener('controllerchange', () => {
+        if (reloading) return;
+        // User hasn't clicked reload yet — leave the banner up.
+      });
+
+      document.getElementById('update-reload').addEventListener('click', () => {
+        reloading = true;
+        navigator.serviceWorker.getRegistration().then((reg) => {
+          // If a new SW is waiting, tell it to skip waiting and then reload
+          // once it takes control. Otherwise just reload directly.
+          if (reg?.waiting) {
+            reg.waiting.postMessage({ type: 'SKIP_WAITING' });
+            navigator.serviceWorker.addEventListener('controllerchange',
+              () => location.reload(), { once: true });
+          } else {
+            location.reload();
+          }
+        });
+      });
+    });
+  }
+
+  async function toggleFullscreen() {
+    try {
+      if (!getFSElement()) {
+        // Bind to the right receiver so `this` is correct inside the native method.
+        if (typeof reqFS === 'function') await reqFS.call(rootEl);
+        // Best-effort landscape lock on mobile. Works on Android Chrome;
+        // iOS Safari doesn't support orientation.lock — catch and ignore.
+        if (screen.orientation?.lock) {
+          screen.orientation.lock('landscape').catch(() => {});
+        }
+      } else {
+        if (typeof exitFS === 'function') await exitFS.call(document);
+        screen.orientation?.unlock?.();
+      }
+    } catch (err) {
+      console.warn('[fullscreen] toggle failed:', err);
+    }
+  }
+
+  // Both event names — `fullscreenchange` for modern browsers, the webkit
+  // variant for older iOS / Safari that never transitioned.
+  const syncFSState = () => {
+    const on = !!getFSElement();
+    document.body.classList.toggle('is-fullscreen', on);
+    fsBtn.setAttribute('aria-label', on ? 'Exit fullscreen' : 'Enter fullscreen');
+    fsBtn.title = on ? 'Exit fullscreen (F)' : 'Fullscreen (F)';
+    const fsMnu = document.getElementById('menu-fullscreen');
+    if (on) fsMnu.setAttribute('data-checked', '');
+    else fsMnu.removeAttribute('data-checked');
+    // Actually reached fullscreen (via any path — button, menu, F-key, or
+    // the browser's built-in gesture) → drop the hint permanently.
+    if (on) dismissFSHint();
+  };
+  document.addEventListener('fullscreenchange', syncFSState);
+  document.addEventListener('webkitfullscreenchange', syncFSState);
+
+  // Orientation hint — warm toast that surfaces when the device is in portrait
+  // and landscape would give a better experience (iOS standalone at any time,
+  // or any platform while in fullscreen). Non-blocking, auto-dismisses after
+  // TOAST_DURATION_MS so the user can still use the app in portrait if they
+  // want. We deliberately do NOT listen to `resize` — it fires on every iOS
+  // URL-bar show/hide and would spam the hint.
+  const orientationToast = document.getElementById('orientation-toast');
+  const isPortrait = () => window.innerHeight > window.innerWidth;
+  const TOAST_DURATION_MS = 6000;
+  let toastTimer = null;
+
+  const showOrientationToast = () => {
+    orientationToast.classList.add('shown');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(
+      () => orientationToast.classList.remove('shown'),
+      TOAST_DURATION_MS,
+    );
+  };
+
+  const maybePromptLandscape = () => {
+    const prefersLandscape = (isIOS && isStandalone) || !!getFSElement();
+    if (prefersLandscape && isPortrait()) showOrientationToast();
+  };
+
+  window.addEventListener('orientationchange', maybePromptLandscape);
+  document.addEventListener('fullscreenchange', maybePromptLandscape);
+  document.addEventListener('webkitfullscreenchange', maybePromptLandscape);
+
+  // Initial boot: iOS standalone launched in portrait → surface the hint once.
+  if (isIOS && isStandalone && isPortrait()) {
+    setTimeout(showOrientationToast, 500);
+  }
+
+  fsBtn.addEventListener('click', () => {
+    if (isIOS && !isStandalone) {
+      // iOS browser — ℹ️ button toggles the install-guide banner.
+      iosInstall.classList.toggle('shown');
+    } else {
+      // Desktop / Android — standard fullscreen toggle.
+      // (iOS standalone hides #fs-btn via CSS; this branch is unreachable there.)
+      dismissFSHint();
+      toggleFullscreen();
+    }
+  });
+  document.getElementById('menu-fullscreen').addEventListener('click', () => {
+    dismissFSHint();
+    toggleFullscreen();
     menuEl.classList.remove('shown');
   });
 
@@ -721,6 +1161,479 @@
     if (e.code === 'KeyR') headSource.calibrate?.();
     if (e.code === 'KeyH') selfview.classList.toggle('hidden');
     if (e.code === 'KeyM') tryStart(async () => usePointerHead(), 'pointer');
+    if (e.code === 'KeyF') { dismissFSHint(); toggleFullscreen(); }
   });
+
+  // ════════════════════════════════════════════════════════════════════════════
+  //  Scene builders
+  //  These are function declarations (hoisted) so the async `buildSceneFromConfig`
+  //  IIFE near the top of the script can call them. Keeping the long-form scene
+  //  code down here keeps the main pipeline (DOM → head source → render loop)
+  //  readable in the first ~600 lines.
+  // ════════════════════════════════════════════════════════════════════════════
+
+  // ─── Demo scene — the original procedural torus-knot + floating-geometry fishtank.
+  //      Returns { tick(dt), onResize() } for the render loop to call.
+  function buildDemoScene(scene) {
+    // Wide wireframe "back wall" — sized generously so extreme parallax
+    // never reveals the void past its edges.
+    const wall = new THREE.Mesh(
+      new THREE.PlaneGeometry(16, 10, 28, 16),
+      new THREE.MeshStandardMaterial({ color: '#1b2030', wireframe: true })
+    );
+    wall.position.set(0, 0, -3.5);
+    scene.add(wall);
+
+    const props = new THREE.Group();
+    scene.add(props);
+
+    const palette = [
+      '#ff6b6b','#ffd166','#6bcb77','#4d96ff','#c780fa','#ffb7b2','#a0e7e5',
+      '#f9a03f','#82c0cc','#eddea4','#e07a5f','#81b29a','#f2cc8f','#3d405b',
+      '#ef476f','#06d6a0','#118ab2','#ffd6a5'
+    ];
+    const geomPool = [
+      () => new THREE.BoxGeometry(0.3, 0.3, 0.3),
+      () => new THREE.SphereGeometry(0.2, 24, 16),
+      () => new THREE.ConeGeometry(0.22, 0.5, 18),
+      () => new THREE.CylinderGeometry(0.16, 0.16, 0.45, 24),
+      () => new THREE.DodecahedronGeometry(0.24),
+      () => new THREE.IcosahedronGeometry(0.26, 0),
+      () => new THREE.OctahedronGeometry(0.24),
+      () => new THREE.TorusGeometry(0.2, 0.07, 14, 30),
+      () => new THREE.TetrahedronGeometry(0.3),
+    ];
+    const pick = arr => arr[Math.floor(Math.random() * arr.length)];
+
+    for (let i = 0; i < 90; i++) {
+      const g = pick(geomPool)();
+      const scale = 0.55 + Math.random() * 1.7;
+      const m = new THREE.Mesh(
+        g,
+        new THREE.MeshStandardMaterial({
+          color: pick(palette),
+          roughness: 0.25 + Math.random() * 0.6,
+          metalness: Math.random() * 0.45
+        })
+      );
+      m.position.set(
+        (Math.random() - 0.5) * 12,
+        (Math.random() - 0.5) * 8,
+        -3.2 + Math.random() * 4.4
+      );
+      m.rotation.set(
+        Math.random() * Math.PI * 2,
+        Math.random() * Math.PI * 2,
+        Math.random() * Math.PI * 2
+      );
+      m.scale.setScalar(scale);
+      props.add(m);
+    }
+
+    // Hero torus-knot — the animated centrepiece.
+    const knot = new THREE.Mesh(
+      new THREE.TorusKnotGeometry(0.45, 0.14, 180, 22),
+      new THREE.MeshStandardMaterial({ color: '#4bc0d9', roughness: 0.2, metalness: 0.5 })
+    );
+    knot.position.set(0, 0, 0.2);
+    props.add(knot);
+
+    const bigBall = new THREE.Mesh(
+      new THREE.SphereGeometry(0.9, 48, 32),
+      new THREE.MeshStandardMaterial({ color: '#f2a65a', roughness: 0.4 })
+    );
+    bigBall.position.set(-3.4, 0.6, -2.3);
+    props.add(bigBall);
+
+    const bigDodec = new THREE.Mesh(
+      new THREE.DodecahedronGeometry(0.85),
+      new THREE.MeshStandardMaterial({ color: '#c780fa', roughness: 0.35, metalness: 0.25 })
+    );
+    bigDodec.position.set(3.0, -0.8, -2.5);
+    props.add(bigDodec);
+
+    const bigTorus = new THREE.Mesh(
+      new THREE.TorusGeometry(0.7, 0.18, 24, 64),
+      new THREE.MeshStandardMaterial({ color: '#ffd166', roughness: 0.3, metalness: 0.3 })
+    );
+    bigTorus.position.set(2.2, 2.1, -2.8);
+    bigTorus.rotation.set(0.6, 0.4, 0);
+    props.add(bigTorus);
+
+    const bigCone = new THREE.Mesh(
+      new THREE.ConeGeometry(0.7, 1.4, 36),
+      new THREE.MeshStandardMaterial({ color: '#81b29a', roughness: 0.4 })
+    );
+    bigCone.position.set(-2.6, -1.8, -2.6);
+    bigCone.rotation.z = -0.3;
+    props.add(bigCone);
+
+    return {
+      tick: (dt) => {
+        knot.rotation.x += dt * 0.3;
+        knot.rotation.y += dt * 0.5;
+      },
+      onResize: () => {}
+    };
+  }
+
+  // ─── Image-layers scene — stacks 2D media planes at configurable depths.
+  //      Media types dispatched by file extension: images (texture loader),
+  //      GIF/APNG (hidden <img> → CanvasTexture, repainted each tick so the
+  //      browser's native decoder drives the animation), MP4/WebM (VideoTexture).
+  //      Layer position + size is recomputed on resize so anchors stay pinned
+  //      to viewport edges across portrait↔landscape rotations.
+  async function buildImageLayerScene(scene, camera, sceneCfg) {
+    const mediaPool = document.getElementById('media-pool');
+    const quad = new THREE.PlaneGeometry(1, 1);
+
+    const layers = [];
+    const loads = (sceneCfg.layers ?? []).map(async (lc) => {
+      try {
+        const src = new URL(lc.src, document.baseURI).href;
+        const media = await loadLayerMedia(src, mediaPool);
+        const mat = new THREE.MeshBasicMaterial({
+          map: media.texture,
+          transparent: true,
+          depthWrite: false      // keep alpha blending clean across stacked planes
+        });
+        const mesh = new THREE.Mesh(quad, mat);
+        mesh.name = lc.id ?? lc.src;
+        scene.add(mesh);
+        layers.push({ cfg: lc, media, mesh });
+      } catch (err) {
+        console.error(`[image-layers] failed to load "${lc.id ?? lc.src}":`, err);
+      }
+    });
+    await Promise.all(loads);
+
+    // Back-to-front draw order so transparent layers composite correctly.
+    layers.sort((a, b) => a.cfg.depth - b.cfg.depth);
+    layers.forEach((l, i) => { l.mesh.renderOrder = i; });
+
+    function layoutLayers() {
+      if (!camera.aspect || !isFinite(camera.aspect)) return;
+      const fovRad = camera.fov * Math.PI / 180;
+      for (const { cfg, media, mesh } of layers) {
+        // Distance from the camera's *base* (non-parallaxed) position. Using
+        // CAMERA_DISTANCE keeps anchors stable as the camera jitters for parallax.
+        const distance = CAMERA_DISTANCE - cfg.depth;   // depth is negative → distance > CAMERA_DISTANCE
+        const visH = 2 * distance * Math.tan(fovRad / 2);
+        const visW = visH * camera.aspect;
+        const imgAspect = media.aspect || 1;
+
+        let w, h, x = 0, y = 0;
+        const anchor = (cfg.anchor ?? 'center').toLowerCase();
+
+        if (anchor === 'cover') {
+          // Preserve image aspect; scale so the plane covers the viewport
+          // (may crop top/bottom or left/right depending on aspect match).
+          const viewAspect = visW / visH;
+          if (imgAspect > viewAspect) { h = visH; w = h * imgAspect; }
+          else                        { w = visW; h = w / imgAspect; }
+        } else {
+          const widthPct = Number.isFinite(cfg.widthPct) ? cfg.widthPct : 50;
+          w = visW * widthPct / 100;
+          h = w / imgAspect;
+          const lr = anchor.includes('left')   ? 'left'
+                   : anchor.includes('right')  ? 'right'
+                   : 'center';
+          const tb = anchor.includes('top')    ? 'top'
+                   : anchor.includes('bottom') ? 'bottom'
+                   : 'center';
+          if (lr === 'left')       x = -visW / 2 + w / 2;
+          else if (lr === 'right') x =  visW / 2 - w / 2;
+          if (tb === 'top')        y =  visH / 2 - h / 2;
+          else if (tb === 'bottom')y = -visH / 2 + h / 2;
+
+          // Optional fractional offset on top of the anchor.
+          if (cfg.offset) {
+            if (Number.isFinite(cfg.offset.x)) x += cfg.offset.x * visW;
+            if (Number.isFinite(cfg.offset.y)) y += cfg.offset.y * visH;
+          }
+        }
+        mesh.scale.set(w, h, 1);
+        mesh.position.set(x, y, cfg.depth);
+      }
+    }
+
+    return {
+      tick: () => {
+        // GIF/APNG need their hidden <img> repainted into the canvas texture
+        // each frame — browser decodes the animation, we sample it.
+        for (const l of layers) l.media.update?.();
+      },
+      onResize: layoutLayers
+    };
+  }
+
+  // ─── Media loaders, dispatched by extension ──────────────────────────────
+  //      Returns { texture, aspect, update? }. `update` repaints animated
+  //      sources into their CanvasTexture; absent for videos (VideoTexture
+  //      auto-updates) and static images.
+  function loadLayerMedia(src, pool) {
+    const ext = src.toLowerCase().split('?')[0].split('#')[0].split('.').pop();
+    if (ext === 'gif' || ext === 'apng')        return loadAnimatedImage(src, pool);
+    if (['mp4','webm','mov','m4v'].includes(ext)) return loadVideoTexture(src, pool);
+    return loadStaticImage(src);
+  }
+
+  function loadStaticImage(src) {
+    return new Promise((resolve, reject) => {
+      new THREE.TextureLoader().load(src, (tex) => {
+        tex.colorSpace = THREE.SRGBColorSpace;
+        tex.minFilter = THREE.LinearFilter;
+        tex.magFilter = THREE.LinearFilter;
+        const aspect = tex.image.naturalWidth / tex.image.naturalHeight;
+        resolve({ texture: tex, aspect });
+      }, undefined, (err) => reject(new Error(`image load failed: ${src} (${err?.message ?? err})`)));
+    });
+  }
+
+  function loadAnimatedImage(src, pool) {
+    return new Promise((resolve, reject) => {
+      const img = document.createElement('img');
+      img.crossOrigin = 'anonymous';
+      img.decoding = 'async';
+      pool.appendChild(img);
+      img.onload = () => {
+        const w = img.naturalWidth, h = img.naturalHeight;
+        const cv = document.createElement('canvas');
+        cv.width = w; cv.height = h;
+        const ctx = cv.getContext('2d');
+        const tex = new THREE.CanvasTexture(cv);
+        tex.colorSpace = THREE.SRGBColorSpace;
+        tex.minFilter = THREE.LinearFilter;
+        tex.magFilter = THREE.LinearFilter;
+        const update = () => {
+          // Redraw the current (animated) <img> frame into the backing canvas;
+          // CanvasTexture samples from the canvas. Browsers run the GIF's
+          // frame clock natively so long as the <img> is in the DOM.
+          ctx.clearRect(0, 0, w, h);
+          ctx.drawImage(img, 0, 0, w, h);
+          tex.needsUpdate = true;
+        };
+        update();  // prime the first frame
+        resolve({ texture: tex, aspect: w / h, update });
+      };
+      img.onerror = () => reject(new Error(`animated image load failed: ${src}`));
+      img.src = src;
+    });
+  }
+
+  function loadVideoTexture(src, pool) {
+    return new Promise((resolve, reject) => {
+      const video = document.createElement('video');
+      video.src = src;
+      video.loop = true;
+      video.muted = true;
+      video.playsInline = true;
+      video.autoplay = true;
+      video.crossOrigin = 'anonymous';
+      pool.appendChild(video);
+      video.addEventListener('loadedmetadata', () => {
+        const tex = new THREE.VideoTexture(video);
+        tex.colorSpace = THREE.SRGBColorSpace;
+        tex.minFilter = THREE.LinearFilter;
+        tex.magFilter = THREE.LinearFilter;
+        // Autoplay is reliable with muted+playsinline, but catch silently in
+        // case a policy still blocks it — the first user interaction unblocks.
+        video.play().catch(() => {});
+        resolve({ texture: tex, aspect: video.videoWidth / video.videoHeight });
+      }, { once: true });
+      video.addEventListener('error', () => reject(new Error(`video load failed: ${src}`)), { once: true });
+    });
+  }
+
+  // ─── 3D model scene — .glb / .gltf / .fbx / .obj / .stl ──────────────────
+  //      Loads a single model (optionally with animations for glTF/FBX) and
+  //      places it in the fishtank volume. DRACO and KTX2 decoders are wired
+  //      from the vendored addons/libs/ so compressed GLBs work offline.
+  async function buildModelScene(scene, camera, sceneCfg) {
+    const src = new URL(sceneCfg.src, document.baseURI).href;
+    const ext = extOf(src);
+
+    const { object, mixer, lights } = await loadModel(src, ext, sceneCfg);
+    for (const l of (lights ?? [])) scene.add(l);
+    scene.add(object);
+
+    applyPlacement(object, sceneCfg);
+    return {
+      tick: (dt) => { mixer?.update(dt); },
+      onResize: () => {}
+    };
+  }
+
+  async function loadModel(src, ext, sceneCfg) {
+    if (ext === 'glb' || ext === 'gltf') {
+      const { GLTFLoader }  = await import('three/addons/loaders/GLTFLoader.js');
+      const { DRACOLoader } = await import('three/addons/loaders/DRACOLoader.js');
+      const { KTX2Loader }  = await import('three/addons/loaders/KTX2Loader.js');
+      const { MeshoptDecoder } = await import('three/addons/libs/meshopt_decoder.module.js');
+
+      const loader = new GLTFLoader();
+      const draco  = new DRACOLoader().setDecoderPath('./vendor/three/addons/libs/draco/gltf/');
+      const ktx2   = new KTX2Loader().setTranscoderPath('./vendor/three/addons/libs/basis/').detectSupport(renderer);
+      loader.setDRACOLoader(draco);
+      loader.setKTX2Loader(ktx2);
+      loader.setMeshoptDecoder(MeshoptDecoder);
+
+      const gltf = await loader.loadAsync(src);
+      const object = gltf.scene || gltf.scenes?.[0];
+      // Animations: play all by default, or just the one named `sceneCfg.animation`
+      // (or none if animation === 'none').
+      let mixer = null;
+      const clips = gltf.animations ?? [];
+      const want  = sceneCfg.animation ?? 'auto';
+      if (clips.length && want !== 'none') {
+        mixer = new THREE.AnimationMixer(object);
+        if (want === 'auto') {
+          for (const c of clips) mixer.clipAction(c).play();
+        } else {
+          const clip = clips.find((c) => c.name === want);
+          if (clip) mixer.clipAction(clip).play();
+          else console.warn(`[model] animation "${want}" not found — available:`, clips.map(c => c.name));
+        }
+      }
+      return { object, mixer, lights: defaultStudioLights() };
+    }
+
+    if (ext === 'fbx') {
+      const { FBXLoader } = await import('three/addons/loaders/FBXLoader.js');
+      const object = await new FBXLoader().loadAsync(src);
+      let mixer = null;
+      if (object.animations?.length && sceneCfg.animation !== 'none') {
+        mixer = new THREE.AnimationMixer(object);
+        const want = sceneCfg.animation ?? 'auto';
+        if (want === 'auto') {
+          for (const c of object.animations) mixer.clipAction(c).play();
+        } else {
+          const clip = object.animations.find((c) => c.name === want);
+          if (clip) mixer.clipAction(clip).play();
+        }
+      }
+      return { object, mixer, lights: defaultStudioLights() };
+    }
+
+    if (ext === 'obj') {
+      const { OBJLoader } = await import('three/addons/loaders/OBJLoader.js');
+      const object = await new OBJLoader().loadAsync(src);
+      return { object, mixer: null, lights: defaultStudioLights() };
+    }
+
+    if (ext === 'stl') {
+      const { STLLoader } = await import('three/addons/loaders/STLLoader.js');
+      const geom = await new STLLoader().loadAsync(src);
+      geom.computeVertexNormals();
+      const mat  = new THREE.MeshStandardMaterial({ color: 0xcccccc, metalness: 0.1, roughness: 0.6 });
+      const object = new THREE.Mesh(geom, mat);
+      return { object, mixer: null, lights: defaultStudioLights() };
+    }
+
+    throw new Error(`unsupported model extension: .${ext}`);
+  }
+
+  // ─── Point-cloud scene — .ply / .pcd / .xyz ──────────────────────────────
+  //      Renders a single `THREE.Points` cloud. `pointSize` is in world units
+  //      (PointsMaterial `sizeAttenuation` is on, so size shrinks with depth).
+  async function buildPointCloudScene(scene, camera, sceneCfg) {
+    const src = new URL(sceneCfg.src, document.baseURI).href;
+    const ext = extOf(src);
+
+    let geom;
+    if (ext === 'ply') {
+      const { PLYLoader } = await import('three/addons/loaders/PLYLoader.js');
+      geom = await new PLYLoader().loadAsync(src);
+    } else if (ext === 'pcd') {
+      const { PCDLoader } = await import('three/addons/loaders/PCDLoader.js');
+      const pcd = await new PCDLoader().loadAsync(src);
+      // PCDLoader returns a Points directly — peel the geometry off so we
+      // can re-skin it with our configured material.
+      geom = pcd.geometry;
+    } else if (ext === 'xyz') {
+      const { XYZLoader } = await import('three/addons/loaders/XYZLoader.js');
+      geom = await new XYZLoader().loadAsync(src);
+    } else {
+      throw new Error(`unsupported point-cloud extension: .${ext}`);
+    }
+
+    const hasColor       = !!geom.getAttribute('color');
+    const useVertexColor = hasColor && (sceneCfg.useVertexColors ?? true);
+    const mat = new THREE.PointsMaterial({
+      size: Number.isFinite(sceneCfg.pointSize) ? sceneCfg.pointSize : 0.008,
+      sizeAttenuation: true,
+      vertexColors: useVertexColor,
+      color: useVertexColor ? 0xffffff : new THREE.Color(sceneCfg.pointColor ?? '#ffffff')
+    });
+
+    const points = new THREE.Points(geom, mat);
+    scene.add(points);
+    applyPlacement(points, sceneCfg);
+
+    return { tick: () => {}, onResize: () => {} };
+  }
+
+  // ─── Shared placement helpers (model + point-cloud) ──────────────────────
+  //      `fit: 'auto'`  → rescale so the object's longest bounding-box axis
+  //                       fits the configurable `fitSize` (default 2.0 world
+  //                       units — a touch shorter than the fishtank height
+  //                       visible at z=0 from CAMERA_DISTANCE=3). Then apply
+  //                       position/rotation/scale on top.
+  //      `fit: 'none'`  → raw file coords. Use for models already authored
+  //                       to scene scale.
+  //      position / rotation / scale / fitSize all optional.
+  function applyPlacement(object, cfg) {
+    const fit = cfg.fit ?? 'auto';
+    if (fit === 'auto') applyAutoFit(object, cfg.fitSize ?? 2.0);
+
+    const s = cfg.scale;
+    if (Number.isFinite(s))                object.scale.multiplyScalar(s);
+    else if (s && typeof s === 'object') {
+      object.scale.x *= (s.x ?? 1);
+      object.scale.y *= (s.y ?? 1);
+      object.scale.z *= (s.z ?? 1);
+    }
+
+    if (cfg.rotation) {
+      // Rotation values are degrees (more intuitive in a JSON config than radians).
+      const r = cfg.rotation;
+      object.rotation.x += (r.x ?? 0) * Math.PI / 180;
+      object.rotation.y += (r.y ?? 0) * Math.PI / 180;
+      object.rotation.z += (r.z ?? 0) * Math.PI / 180;
+    }
+
+    if (cfg.position) {
+      object.position.x += (cfg.position.x ?? 0);
+      object.position.y += (cfg.position.y ?? 0);
+      object.position.z += (cfg.position.z ?? 0);
+    }
+  }
+
+  // Auto-fit: center on origin, then scale so longest bbox axis == fitSize.
+  function applyAutoFit(object, fitSize) {
+    const box = new THREE.Box3().setFromObject(object);
+    if (box.isEmpty()) return;
+    const size = new THREE.Vector3(); box.getSize(size);
+    const center = new THREE.Vector3(); box.getCenter(center);
+    const maxAxis = Math.max(size.x, size.y, size.z) || 1;
+    const k = fitSize / maxAxis;
+    // Pull to origin first, then scale about origin by k.
+    object.position.sub(center.multiplyScalar(k));
+    object.scale.multiplyScalar(k);
+  }
+
+  // Three directional lights in a soft studio triangle + gentle ambient.
+  // Used by model loaders so MeshStandard/Physical materials don't render pure black.
+  function defaultStudioLights() {
+    const amb  = new THREE.AmbientLight(0xffffff, 0.25);
+    const key  = new THREE.DirectionalLight(0xffffff, 0.9); key.position.set( 3,  4,  5);
+    const fill = new THREE.DirectionalLight(0xbfd4ff, 0.4); fill.position.set(-4,  2,  3);
+    const rim  = new THREE.DirectionalLight(0xffd9a8, 0.3); rim.position.set (  0,  3, -5);
+    return [amb, key, fill, rim];
+  }
+
+  function extOf(src) {
+    return src.toLowerCase().split('?')[0].split('#')[0].split('.').pop();
+  }
   </script>
 </bo

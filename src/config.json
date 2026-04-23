@@ -1,0 +1,92 @@
+{
+  "$schema_notes": [
+    "Edit `scene.type` to switch between scene renderers:",
+    "  'demo'          → the procedural torus-knot / floating-geometry scene (default).",
+    "  'image-layers'  → stacked 2D media planes built from `scene.layers` below.",
+    "  'model'         → a single 3D model. .glb .gltf .fbx .obj .stl",
+    "                    DRACO-compressed and KTX2-textured glTF are handled offline.",
+    "  'point-cloud'   → a single point cloud. .ply .pcd .xyz",
+    "  Copy a block from `_examples.*` into `scene` to activate it.",
+    "Parallax strength is shared across all scene types.",
+    "",
+    "── image-layers fields ─────────────────────────────────────────────────",
+    "  id        optional label used in console warnings.",
+    "  src       relative path from this file (e.g. 'assets/shibuya/bg.jpg').",
+    "            Accepted media: .jpg .jpeg .png .webp .avif (static),",
+    "            .gif .apng (animated, decoded via hidden <img>),",
+    "            .mp4 .webm .mov (video, muted+looped).",
+    "  anchor    'cover'                                  — fills viewport, preserves aspect (may crop).",
+    "            'center' | 'left' | 'right' | 'top' | 'bottom'",
+    "            'top-left' | 'top-right' | 'bottom-left' | 'bottom-right'",
+    "  widthPct  layer width as a % of the viewport width visible at its depth (ignored for 'cover').",
+    "  depth     world-space Z. More negative = farther back = parallaxes less.",
+    "            Camera sits at z=+3; useful depths run roughly -0.3 (near) to -6 (far).",
+    "  offset    { x, y } fractional viewport offset applied AFTER the anchor snap.",
+    "            e.g. { x: 0.05 } nudges the layer 5% of viewport width to the right.",
+    "",
+    "── model / point-cloud shared fields ───────────────────────────────────",
+    "  src       relative path to the asset file.",
+    "  fit       'auto' (default) → center + rescale so longest bbox axis == fitSize.",
+    "            'none'           → keep raw file coords (use for scene-scaled models).",
+    "  fitSize   target size for the longest bounding-box axis when fit='auto' (default 2.0).",
+    "  position  { x, y, z } applied AFTER fit. World units. z=0 is the glass of the screen.",
+    "  rotation  { x, y, z } in DEGREES, applied after fit.",
+    "  scale     number (uniform) or { x, y, z }. Multiplied on top of fit.",
+    "",
+    "── model-only ──────────────────────────────────────────────────────────",
+    "  animation  'auto' (default — play all clips), 'none', or a clip name string.",
+    "",
+    "── point-cloud-only ────────────────────────────────────────────────────",
+    "  pointSize        world-space point size. Default 0.008. Tune per cloud.",
+    "  useVertexColors  true if the file has per-point colors and you want them (default true).",
+    "  pointColor       solid color when useVertexColors=false. CSS hex, e.g. '#aeffc7'."
+  ],
+
+  "scene": {
+    "type": "demo",
+    "background": "#0a0b10"
+  },
+
+  "parallax": {
+    "strength": { "x": 0.8, "y": 0.5, "z": 0.3 }
+  },
+
+  "_examples": {
+    "imageLayersShibuya": {
+      "type": "image-layers",
+      "background": "#0a0b10",
+      "layers": [
+        { "id": "L5-bg",     "src": "assets/shibuya/bg.jpg",      "anchor": "cover",                                   "depth": -6.0 },
+        { "id": "L4-bridge", "src": "assets/shibuya/bridge.webp", "anchor": "top",          "widthPct": 65,            "depth": -4.0 },
+        { "id": "L3-tree",   "src": "assets/shibuya/tree.webp",   "anchor": "right",        "widthPct": 25,            "depth": -2.5 },
+        { "id": "L1-lady",   "src": "assets/shibuya/lady.gif",    "anchor": "left",         "widthPct": 25,            "depth": -1.0 },
+        { "id": "L2-bike",   "src": "assets/shibuya/bike.webp",   "anchor": "bottom-right", "widthPct": 12,            "depth": -0.4 }
+      ]
+    },
+
+    "modelGLB": {
+      "type": "model",
+      "background": "#0a0b10",
+      "src": "assets/models/robot.glb",
+      "fit": "auto",
+      "fitSize": 2.0,
+      "position": { "x": 0, "y": -0.2, "z": -1.0 },
+      "rotation": { "x": 0, "y": 25,   "z": 0    },
+      "scale": 1.0,
+      "animation": "auto"
+    },
+
+    "pointCloudPLY": {
+      "type": "point-cloud",
+      "background": "#05070c",
+      "src": "assets/clouds/scan.ply",
+      "fit": "auto",
+      "fitSize": 2.4,
+      "position": { "x": 0, "y": 0, "z": -1.2 },
+      "rotation": { "x": -90, "y": 0, "z": 0 },
+      "pointSize": 0.008,
+      "useVertexColors": true,
+      "pointColor": "#ffffff"
+    }
+  }
+}

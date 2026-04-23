@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Read",
+      "List",
+      "Find",
+      "Search",
+      "Get",
+      
+      "WebFetch",
+      "WebSearch",
+      "mcp__playwright",
+      "Bash(python ~/.claude/statusline.py)"
+    ]
+  }
+}

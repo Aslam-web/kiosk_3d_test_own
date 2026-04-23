@@ -1,0 +1,4 @@
+- generic [active] [ref=e1]:
+  - button "Enter fullscreen" [ref=e3] [cursor=pointer]:
+    - img [ref=e4]
+  - generic [ref=e6]: "STATE: normal"

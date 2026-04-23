@@ -43,9 +43,11 @@ yarn-debug.log*
 yarn-error.log*
 
 # Bulky reference assets kept out of the repo
-/linkedin-video.mp4
-# Abandoned Vite/TS codebase — kept locally for reference, not pushed
-/_archive/
-# Source archives in src/assets/ — the unpacked folders next to them
-# (e.g. pickups/, livingroom.rwi/) are what the app actually loads
-src/assets/*.zip
+
+/_archive
+
+/*.mp4
+/**/**/*.zip
+# /src/assets
+/src/icons/_archive
+/src/icons/pwa-icons
